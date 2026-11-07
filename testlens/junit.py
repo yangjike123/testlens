@@ -44,10 +44,16 @@ def file_from_classname(classname: str | None, package: PackageSpec, repo_root: 
     pytest 的 junitxml 默认只给 `classname="test.unit.test_config"`，没有
     `file` 属性（不同版本行为不一致）。这里把点分路径逐级试成 .py，并用
     「文件是否存在」把类名那一层剥掉（`...test_module.TestClass`）。
+
+    monorepo 里 pytest 从仓库根跑时，classname 会带上包根
+    （`services.api.test.test_health`），此时不能再补一遍 `services/api/`，
+    否则会拼成 `services/api/services/api/...`，所有文件都归不到包上。
     """
     parts = [part for part in (classname or "").split(".") if part]
+    prefix = root_prefix(package)
     while parts:
-        candidate = f"{root_prefix(package)}{'/'.join(parts)}.py"
+        dotted = "/".join(parts) + ".py"
+        candidate = dotted if prefix and dotted.startswith(prefix) else f"{prefix}{dotted}"
         if (repo_root / candidate).is_file():
             return candidate
         parts.pop()

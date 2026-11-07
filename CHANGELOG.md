@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 — 2026-11-08
+
+- 修复多服务（多包）项目里 junit 结果**按文件统计为空**的问题：pytest 9 的 junitxml
+  不再输出 `file` 属性，`classname` 会带包根（`services.api.test.test_health`），旧逻辑
+  又补了一次 `services/api/`，拼出的路径不存在 → 每脚本耗时与失败定位缺失（总用例数正常）。
+- 新增多服务集成测试 `tests/test_multiservice.py`：一个仓库两套服务、每套多个脚本，
+  覆盖并发运行（按包分槽）、同包互斥、一次跑多个脚本、覆盖率按包隔离、`--package` 过滤。
+
 ## 0.4.0 — 2026-11-08
 
 - 起面板后**默认不再自动打开页面**：是否打开由 `[server] open_browser` 控制（默认 `false`），

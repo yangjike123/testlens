@@ -26,7 +26,7 @@ from testlens.inventory import (
     build_payload,
     render_html_string,
 )
-from testlens.junit import _failure_message, parse_files
+from testlens.junit import _failure_message, file_from_classname, parse_files
 from testlens.scan import Scanner
 
 
@@ -334,6 +334,31 @@ def test_failure_message_variants(tmp_path: Path) -> None:
 
     empty = ET.fromstring("<testcase><failure message='  '></failure></testcase>")
     assert _failure_message(empty) == ""
+
+
+def test_file_from_classname_handles_package_prefix(tmp_path: Path) -> None:
+    """monorepo 从仓库根跑 pytest 时，classname 会带上包根，不能再补一次前缀。"""
+    target = tmp_path / "services/api/test/unit/test_users.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    package = PackageSpec(name="api", label="API", root="services/api")
+
+    assert (
+        file_from_classname("services.api.test.unit.test_users", package, tmp_path)
+        == "services/api/test/unit/test_users.py"
+    )
+    # 带测试类名：逐级剥掉类名后仍能落到文件
+    assert (
+        file_from_classname("services.api.test.unit.test_users.TestUsers", package, tmp_path)
+        == "services/api/test/unit/test_users.py"
+    )
+    # 老行为：classname 相对包根（没有仓库前缀）时补前缀
+    assert (
+        file_from_classname("test.unit.test_users", package, tmp_path)
+        == "services/api/test/unit/test_users.py"
+    )
+    assert file_from_classname("nope", package, tmp_path) == ""
+    assert file_from_classname(None, package, tmp_path) == ""
 
 
 def test_parse_files_handles_bad_time_and_error_nodes(tmp_path: Path) -> None:
