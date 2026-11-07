@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.4 — 2026-11-08
+
+- 仓库完整性：`examples/demo` 纳入版本库（保留 `uv.lock`，继续忽略 `.venv` / 运行数据 /
+  覆盖率数据）。干净 clone 后 README 里的 demo 命令可以直接用，相关守护测试不再 skip。
+- 发布流程：`pypa/gh-action-pypi-publish` 加 `skip-existing`（tag 重跑不会因同名文件失败），
+  GitHub Release 改为「PyPI 发布成功之后」再创建；发布前先跑测试。
+
 ## 0.4.3 — 2026-11-08
 
 - 修复 `host = "::1"` 能通过配置校验却起不来：端口探测与 `HTTPServer` 现在按 host

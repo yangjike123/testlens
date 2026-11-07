@@ -62,10 +62,14 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # PyPI 不允许覆盖同名文件：tag 重跑时跳过已上传的文件，
+          # 这样「发布成功但 GitHub Release 失败」可以安全重试。
+          skip-existing: true
 
   github-release:
     name: GitHub Release
-    needs: build
+    needs: publish-pypi
     runs-on: ubuntu-latest
     permissions:
       contents: write

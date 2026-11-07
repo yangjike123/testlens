@@ -1,0 +1,21 @@
+# demo 的声明式配置。与同目录的 testlens_config.py 值完全一致，
+# 两个都在时 **toml 优先**（所以实际读的是这份）。
+# 删掉它就会回落到 testlens_config.py。
+
+[server]
+host = "127.0.0.1"      # 只允许回环：127.0.0.0/8、::1、localhost
+port = 9000
+open_browser = false    # 想启动自动开页面：改 true 或加 --browser
+
+[commands]
+pytest_cmd = "uv run pytest"
+coverage_json_cmd = "uv run coverage json"
+
+[coverage]
+warmup = true           # 启动先补一遍覆盖率数据（数据文件已存在就跳过）
+
+[[package]]
+name = "demo"
+label = "Demo"
+root = "."
+source_pkg = "shop"     # 覆盖率统计 shop/；其余参数按 pyproject 推导
