@@ -1,0 +1,16 @@
+# 本插件作为独立发行包时的忽略规则（仓库根另有一份覆盖全局的）
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 本地运行状态（默认在宿主仓库根的 testlens.data/，这里兜底）
+testlens.data/
+.data/
+
+# 库不锁依赖：lock 由使用方生成
+uv.lock

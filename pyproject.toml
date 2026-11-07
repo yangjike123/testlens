@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "testlens"
+dynamic = ["version"]
+description = "本地测试面板：脚本清单、变更检测、运行历史、代码覆盖率，零运行时依赖"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "yanjike" }]
+dependencies = []
+keywords = ["testing", "pytest", "coverage", "developer-tools", "test-dashboard"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/yanjike/testlens"
+Repository = "https://github.com/yanjike/testlens"
+Issues = "https://github.com/yanjike/testlens/issues"
+Changelog = "https://github.com/yanjike/testlens/blob/main/CHANGELOG.md"
+
+[project.scripts]
+testlens = "testlens.cli:main"
+
+# 版本只在 testlens/__init__.py 维护一处，打包时读出来
+[tool.hatch.version]
+path = "testlens/__init__.py"
+
+# 只打包包目录；tests/、examples/、pyproject 不进 wheel。
+# hatchling 默认会把包目录里的非源码文件（web/dashboard.{html,css,js}、py.typed）
+# 一起带上，所以前端资源不需要额外 package-data 配置。
+[tool.hatch.build.targets.wheel]
+packages = ["testlens"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "testlens/",
+    "tests/",
+    "examples/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "pyproject.toml",
+    "run.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
