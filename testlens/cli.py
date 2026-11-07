@@ -407,7 +407,7 @@ def cmd_page(toolkit: Toolkit, output: str | None, single: bool | None = None) -
 # ----------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m testlens",
+        prog="testlens",
         description="测试脚本清单、变更检测、面板与覆盖率",
     )
     config_help = (
