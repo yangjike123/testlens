@@ -232,14 +232,55 @@ toolkit.serve()         # 起面板，阻塞到 Ctrl+C
 | `name` | 必填 | 唯一 id：URL 段、缓存文件名；只允许小写字母/数字/连字符 |
 | `label` | 必填 | 界面 tab 显示名 |
 | `root` | 必填 | 包根，相对 `repo_root`；`"."` 表示仓库根（此时只能有一个包） |
-| `tests_dir` | `"test"` | 测试目录，相对 `root` |
-| `test_glob` | `"test_*.py"` | 测试文件名匹配 |
-| `func_prefix` | `"test_"` | 统计测试函数用的前缀 |
+| `tests_dir` | `"test"` | 测试目录，相对 `root`；目录不存在时该包扫到 0 个脚本 |
+| `test_glob` | `"test_*.py"` | 文件名匹配（递归子目录）；扫描与运行都用它 |
+| `func_prefix` | `"test_"` | 统计测试函数用的前缀；**不参与**文件判定 |
 | `source_pkg` | 无 | 覆盖率顶层模块；不写 = 该包不统计覆盖率 |
 | `coverage_data_file` | 自动推导 | 覆盖率数据文件，如 `.coverage.api` |
 | `coverage_config` | 自动推导 | 覆盖率配置，如 `.coveragerc.api` |
 | `coverage_args` | 自动推导 | 跑覆盖率时追加给 pytest 的参数 |
 | `coverage_hint` | 自动推导 | 没跑过覆盖率时的提示命令（如 `make test-api`） |
+
+### 怎么判定一个文件是「测试脚本」
+
+只有同时满足三条才算：**位置**在 `<repo_root>/<root>/<tests_dir>` 下、**文件名**匹配
+`test_glob`、**本身是文件**（不是目录）。扫描是递归的，测试目录的子目录
+（`test/unit/`、`test/api/v1/`）都会被收进来：
+
+```text
+<repo_root>/<package.root>/<package.tests_dir>/**/<package.test_glob>
+```
+
+用默认值（`root="."`、`tests_dir="test"`、`test_glob="test_*.py"`）时：
+
+| 路径 | 算不算 | 原因 |
+| --- | --- | --- |
+| `test/test_cart.py` | ✅ | 在 `test/` 下，文件名匹配 |
+| `test/unit/test_users.py` | ✅ | 递归匹配子目录 |
+| `test/cart_test.py` | ❌ | 文件名不是 `test_*.py` |
+| `test/test_cart.py.bak` | ❌ | 后缀不是 `.py` |
+| `tests/test_cart.py` | ❌ | 默认测试目录是 `test/`，不是 `tests/`；要收就改 `tests_dir` |
+| `shop/test_cart.py` | ❌ | 不在包的测试目录内 |
+
+几个容易混的点：
+
+- **`func_prefix` 不参与文件判定**：它只决定「文件里哪些函数算测试函数」（默认 `test_`，
+  含 `async def` 与类方法）。一个 `test_*.py` 里即使没有 `test_` 函数，它仍然是测试脚本，
+  只是清单里显示 0 个函数。它也不会改变 pytest 的收集规则——文件里能不能被 pytest 收集，
+  仍由 pytest 自己的 `python_functions` 决定。
+- **运行前会再校验一次**：页面上勾选/批量运行走 `RunManager.validate_paths`，要求路径
+  在仓库内、属于所选包、落在该包的 `tests_dir` 下、匹配该包的 `test_glob`、文件真实存在
+  且后缀 `.py`；任一不满足返回 400。扫描与运行用的是**同一个 `test_glob`**。
+- **变更检测只看这个集合**：`testlens changed` / `plan` 逐字比较的是上面扫出来的脚本内容；
+  业务源码（`shop/cart.py` 等）改了不算「测试脚本变化」——那种情况用面板的「全部执行」。
+- **`dev` 推断时的默认值**：没有任何配置文件时按 `root="."`、`tests_dir="test"`、
+  `test_glob="test_*.py"` 扫目标目录；目录里没有 `test/` 就扫到 0 个脚本，命令会直接报错，
+  不会起一个空面板。
+- **自定义 glob 也一致**：`test_glob = "check_*.py"` 时，`cases/check_one.py` 既会出现在
+  清单里，也能在页面上运行；同目录的 `test_other.py` 不会被扫描，也不允许运行。
+
+`testlens list` 按包打印每个脚本及其测试函数数；`testlens changed` 标出新增 / 修改 / 删除
+的脚本；`testlens page` 生成的静态页使用同一份清单。
 
 覆盖率定位顺序：显式 `coverage_data_file` ＞ 显式 `coverage_config` / args 里
 `--cov-config=` 指向的配置 ＞ Makefile 里 `--cov=<pkg>` 那行的 `--cov-config` ＞

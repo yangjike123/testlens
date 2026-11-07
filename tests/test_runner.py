@@ -325,6 +325,72 @@ def test_build_commands_groups_by_package_in_defined_order(tmp_path: Path) -> No
     assert "loose.py" not in " ".join(commands[0][1])
 
 
+def test_validate_paths_uses_each_packages_test_glob(tmp_path: Path) -> None:
+    """自定义 test_glob 的包：能扫到的脚本也必须能跑，不能只认 test_*.py。"""
+    (tmp_path / "cases").mkdir()
+    (tmp_path / "cases/check_one.py").write_text(
+        "def test_one():\n    assert True\n", encoding="utf-8"
+    )
+    (tmp_path / "cases/test_other.py").write_text(
+        "def test_other():\n    assert True\n", encoding="utf-8"
+    )
+    config = build_config(
+        packages=(
+            PackageSpec(
+                name="demo",
+                label="Demo",
+                root=".",
+                tests_dir="cases",
+                test_glob="check_*.py",
+            ),
+        ),
+        repo_root=tmp_path,
+        data_dir=tmp_path / "data",
+        pytest_cmd=pytest_cmd(),
+    )
+    manager = make_manager(config)
+    package = config.packages[0]
+
+    assert manager.validate_paths(["cases/check_one.py"], package) == ["cases/check_one.py"]
+    with pytest.raises(BadRequest, match="只接受 check_"):
+        manager.validate_paths(["cases/test_other.py"], package)
+
+
+def test_run_with_custom_test_glob(tmp_path: Path) -> None:
+    """扫描规则与运行规则一致：check_*.py 能扫到、也能真的跑起来。"""
+    (tmp_path / "cases").mkdir()
+    (tmp_path / "cases/check_one.py").write_text(
+        "def test_one():\n    assert True\n", encoding="utf-8"
+    )
+    config = build_config(
+        packages=(
+            PackageSpec(
+                name="demo",
+                label="Demo",
+                root=".",
+                tests_dir="cases",
+                test_glob="check_*.py",
+            ),
+        ),
+        repo_root=tmp_path,
+        data_dir=tmp_path / "data",
+        dist_dir=tmp_path / "dist",
+        pytest_cmd=pytest_cmd(),
+        run_timeout=60.0,
+        coverage_warmup=False,
+    )
+    manager = make_manager(config)
+    package = config.packages[0]
+
+    run = manager.start(package, ["cases/check_one.py"], "自定义 glob")
+    wait_done(manager, run)
+
+    assert run.status == "passed"
+    assert run.results is not None
+    assert run.results["totals"]["tests"] == 1
+    assert run.results["files"][0]["path"] == "cases/check_one.py"
+
+
 def test_command_for_appends_coverage_args(tmp_path: Path) -> None:
     config = make_config(
         tmp_path,

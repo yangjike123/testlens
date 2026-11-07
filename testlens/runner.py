@@ -185,14 +185,18 @@ class RunManager:
             except ValueError as exc:
                 raise BadRequest(f"路径超出仓库范围：{item}") from exc
 
-            if candidate.suffix != ".py" or not candidate.name.startswith("test_"):
-                raise BadRequest(f"只接受 test_*.py：{rel}")
+            owner = package_of(self.config.packages, rel)
+            if owner is None:
+                raise BadRequest(f"不在测试目录内：{rel}")
+            # 用包自己的 test_glob 判断「是不是测试脚本」，和扫描用的是同一个规则；
+            # 写死 test_*.py 会让自定义 test_glob 的包能列出来却跑不了。
+            if candidate.suffix != ".py" or not candidate.match(owner.test_glob):
+                raise BadRequest(f"只接受 {owner.test_glob}：{rel}")
             if not candidate.is_file():
                 raise BadRequest(f"文件不存在：{rel}")
 
-            owner = package_of(self.config.packages, rel)
-            tests_prefix = root_prefix(owner) + f"{owner.tests_dir}/" if owner else ""
-            if owner is None or not rel.startswith(tests_prefix):
+            tests_prefix = root_prefix(owner) + f"{owner.tests_dir}/"
+            if not rel.startswith(tests_prefix):
                 raise BadRequest(f"不在测试目录内：{rel}")
             if owner != package:
                 raise BadRequest(f"{rel} 属于 {owner.label}，不属于 {package.label}")
