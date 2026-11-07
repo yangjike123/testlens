@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 — 2026-11-07
+
+只有元数据修正，功能与 0.3.0 相同。
+
+- 修正 `Project-URL`：`Homepage` / `Repository` / `Issues` / `Changelog` 全部指向
+  `github.com/yangjike123/testlens`（0.3.0 的产物是改账号前构建的，链接指向了错误仓库）。
+- 建议安装 0.3.1；0.3.0 已 yank。
+
 ## 0.3.0 — 2026-11-07
 
 首个公开版本。

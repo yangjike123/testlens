@@ -33,7 +33,7 @@ from .config import (
 )
 from .toolkit import Toolkit
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "Config",
