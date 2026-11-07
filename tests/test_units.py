@@ -23,6 +23,8 @@ from testlens.config import (
     root_prefix,
     source_label,
 )
+# 别名：名字以 test_ 开头的函数被 import 进测试模块后，pytest 会当成用例收集
+from testlens.config import test_files as list_test_files
 from testlens.coverage_report import CoverageService, NoCoverageData
 from testlens.history import HistoryStore
 from testlens.junit import normalize_file, parse_files
@@ -79,6 +81,27 @@ def test_build_config_rejects_non_loopback_host(tmp_path: Path) -> None:
         build_config(
             packages=(make_spec("a", "apps/a"),), repo_root=tmp_path, host="0.0.0.0"
         )
+
+
+def test_build_config_accepts_any_loopback_address(tmp_path: Path) -> None:
+    """127.0.0.0/8 全段都是回环：127.1.1.1 这类地址也该允许，不必写死三个字符串。"""
+    config = build_config(
+        packages=(make_spec("a", "apps/a"),), repo_root=tmp_path, host="127.1.1.1"
+    )
+
+    assert config.host == "127.1.1.1"
+
+
+def test_is_loopback_host() -> None:
+    from testlens.config import is_loopback_host
+
+    assert is_loopback_host("127.0.0.1")
+    assert is_loopback_host("127.1.1.1")
+    assert is_loopback_host("::1")
+    assert is_loopback_host("localhost")
+    assert not is_loopback_host("0.0.0.0")
+    assert not is_loopback_host("192.168.1.10")
+    assert not is_loopback_host("example.com")
 
 
 def test_build_config_rejects_bad_port(tmp_path: Path) -> None:
@@ -402,6 +425,14 @@ def test_build_config_defaults_page_under_data(tmp_path: Path) -> None:
     assert config.static_page_single is False
 
 
+def test_open_browser_defaults_to_off(tmp_path: Path) -> None:
+    """默认不自动打开页面：面板常在 IDE 终端里反复重启，每次弹标签页纯属打扰。"""
+    (tmp_path / "apps/demo").mkdir(parents=True)
+    config = build_config(packages=(make_spec("demo", "apps/demo"),), repo_root=tmp_path)
+
+    assert config.open_browser is False
+
+
 def test_build_config_resolves_relative_paths_against_repo_root(tmp_path: Path) -> None:
     (tmp_path / "apps/demo").mkdir(parents=True)
     config = build_config(
@@ -463,6 +494,19 @@ def test_load_config_reads_page_section_and_repo_root(tmp_path: Path) -> None:
     assert config.static_page_single is True
     assert config.port == 9123
     assert [pkg.name for pkg in config.packages] == ["demo"]
+
+
+def test_open_browser_can_be_enabled_from_toml(tmp_path: Path) -> None:
+    """想自动打开页面就写 [server] open_browser = true；不写 = 关闭。"""
+    (tmp_path / "apps/demo/test").mkdir(parents=True)
+    path = tmp_path / "testlens.toml"
+    path.write_text(
+        '[server]\nopen_browser = true\n\n'
+        '[[package]]\nname = "demo"\nlabel = "Demo"\nroot = "apps/demo"\n',
+        encoding="utf-8",
+    )
+
+    assert load_config(path).open_browser is True
 
 
 def test_load_config_rejects_file_without_packages(tmp_path: Path) -> None:
@@ -709,11 +753,160 @@ def test_config_from_module_reads_config(tmp_path: Path) -> None:
 
 
 def test_config_from_module_without_config_raises(tmp_path: Path) -> None:
+    """严格版仍要求有 config：--config 传错文件必须报错，而不是猜。"""
+    from testlens.cli import config_from_module
+
     module = tmp_path / "empty.py"
     module.write_text("x = 1\n", encoding="utf-8")
 
     with pytest.raises(ConfigError, match="没有找到 config"):
-        config_for_path(str(module), None)
+        config_from_module(module)
+
+
+def test_dev_with_entry_script_uses_directory_config(tmp_path: Path) -> None:
+    """dev <脚本.py>：脚本不是配置文件时，按它所在目录起面板（像 fastapi dev app/main.py）。"""
+    (tmp_path / "test").mkdir()
+    (tmp_path / "testlens.toml").write_text(
+        '[server]\nport = 9123\n\n[[package]]\nname = "solo"\nlabel = "Solo"\nroot = "."\n',
+        encoding="utf-8",
+    )
+    script = tmp_path / "plugin_embed.py"
+    script.write_text("def main() -> int:\n    return 0\n", encoding="utf-8")
+
+    config = config_for_path(str(script), None)
+
+    assert config.port == 9123
+    assert config.repo_root == tmp_path.resolve()
+    assert config.source == str((tmp_path / "testlens.toml").resolve())
+
+
+def test_dev_with_entry_script_falls_back_to_inference(tmp_path: Path) -> None:
+    """目录里也没配置时继续退回推断：一个包、root='.'，不是直接报错。"""
+    (tmp_path / "test").mkdir()
+    script = tmp_path / "main.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+
+    config = config_for_path(str(script), None)
+
+    assert config.source is None
+    assert config.repo_root == tmp_path.resolve()
+    assert len(config.packages) == 1
+    assert config.packages[0].root == "."
+
+
+def test_dev_entry_script_searches_up_for_config(tmp_path: Path) -> None:
+    """指到子目录里的文件也行：向上找到项目根的配置，而不是拿 test/ 当仓库根。"""
+    (tmp_path / "test").mkdir()
+    (tmp_path / "testlens.toml").write_text(
+        '[server]\nport = 9123\n\n[[package]]\nname = "solo"\nlabel = "Solo"\nroot = "."\n',
+        encoding="utf-8",
+    )
+    script = tmp_path / "test" / "test_cart.py"
+    script.write_text("def test_one():\n    pass\n", encoding="utf-8")
+
+    config = config_for_path(str(script), None)
+
+    assert config.repo_root == tmp_path.resolve()
+    assert config.port == 9123
+    assert config.source == str((tmp_path / "testlens.toml").resolve())
+
+
+def test_config_module_edits_take_effect_immediately(tmp_path: Path) -> None:
+    """配置文件改一行就该生效：不能因为 mtime/大小没变而执行到旧字节码。
+
+    两次写入长度相同、间隔极短，正好是 .pyc 失效判断最容易漏掉的场景。
+    """
+    from testlens.cli import config_from_module
+
+    (tmp_path / "test").mkdir()
+    module = tmp_path / "cfg.py"
+    template = (
+        "from pathlib import Path\n"
+        "from testlens import PackageSpec, build_config\n"
+        "config = build_config(packages=(PackageSpec(name='solo', label='Solo', root='.'),),"
+        " repo_root=Path(__file__).parent, port={port})\n"
+    )
+
+    module.write_text(template.format(port=9001), encoding="utf-8")
+    assert config_from_module(module).port == 9001
+
+    module.write_text(template.format(port=9002), encoding="utf-8")
+    assert config_from_module(module).port == 9002
+
+
+def test_dev_without_config_infers_coverage(tmp_path: Path) -> None:
+    """完全没有配置时：只有一个顶层包，就把它的 source_pkg 也推出来，覆盖率可用。"""
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "test").mkdir()
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.coverage.run]\ndata_file = ".coverage.demo"\n', encoding="utf-8"
+    )
+    script = tmp_path / "plugin_embed.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+
+    config = config_for_path(str(script), None)
+
+    assert config.source is None
+    package = config.packages[0]
+    assert package.source_pkg == "shop"
+    assert package.coverage_data_file == ".coverage.demo"
+    assert "--cov=shop" in package.coverage_args
+
+
+def test_infer_spec_does_not_guess_multiple_packages(tmp_path: Path) -> None:
+    """有多个顶层包就不猜 source_pkg：猜错会把别的包算进覆盖率。"""
+    from testlens.cli import infer_spec
+
+    for name in ("alpha", "beta"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "__init__.py").write_text("", encoding="utf-8")
+
+    assert infer_spec(tmp_path).source_pkg is None
+
+
+def test_warm_coverage_explains_when_nothing_configured(tmp_path: Path, capsys) -> None:
+    """--warm-coverage 但没有任何包配覆盖率时，要说明原因，别静默什么都不做。"""
+    from testlens.server import warm_coverage
+    from testlens.toolkit import Toolkit
+
+    (tmp_path / "test").mkdir()
+    config = build_config(
+        packages=(PackageSpec(name="solo", label="Solo", root="."),),
+        repo_root=tmp_path,
+        coverage_warmup=True,
+    )
+
+    assert warm_coverage(Toolkit(config)) == []
+    assert "跳过预热" in capsys.readouterr().out
+
+
+def test_dev_prefers_module_config_over_directory_toml(tmp_path: Path) -> None:
+    """.py 里真有 config 时以它为准，别被同目录的 toml 抢走。"""
+    (tmp_path / "test").mkdir()
+    (tmp_path / "testlens.toml").write_text(
+        '[server]\nport = 9123\n\n[[package]]\nname = "solo"\nlabel = "Solo"\nroot = "."\n',
+        encoding="utf-8",
+    )
+    module = tmp_path / "cfg.py"
+    module.write_text(
+        "from pathlib import Path\n"
+        "from testlens import PackageSpec, build_config\n"
+        "config = build_config(packages=(PackageSpec(name='solo', label='Solo', root='.'),),"
+        " repo_root=Path(__file__).parent, port=9555)\n",
+        encoding="utf-8",
+    )
+
+    assert config_for_path(str(module), None).port == 9555
+
+
+def test_dev_still_raises_when_entry_script_cannot_import(tmp_path: Path) -> None:
+    """脚本导入失败是脚本自己的错，不能当成“没有 config”悄悄退回目录推断。"""
+    script = tmp_path / "broken.py"
+    script.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="boom"):
+        config_for_path(str(script), None)
 
 
 def test_config_from_module_reports_import_failure(tmp_path: Path) -> None:
@@ -830,6 +1023,45 @@ def test_load_cli_config_rejects_unknown_suffix(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="只支持"):
         load_cli_config(str(path))
+
+
+def test_browser_flag_parses_both_ways() -> None:
+    """--browser / --no-browser 只覆盖这一次；不写 = None，听配置（默认关）。"""
+    from testlens.cli import build_parser
+
+    parser = build_parser()
+
+    assert parser.parse_args(["serve"]).browser is None
+    assert parser.parse_args(["serve", "--browser"]).browser is True
+    assert parser.parse_args(["serve", "--no-browser"]).browser is False
+    assert parser.parse_args(["dev", "--browser"]).browser is True
+
+
+def test_serve_browser_flag_reaches_toolkit(tmp_path: Path, monkeypatch) -> None:
+    """serve 的两个开关要真的落到 config.open_browser 上，而不只是被解析出来。"""
+    from testlens import server as server_module
+    from testlens.cli import main
+
+    _write_module_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, bool] = {}
+
+    def fake_run(toolkit) -> int:
+        seen["open_browser"] = toolkit.config.open_browser
+        return 0
+
+    monkeypatch.setattr(server_module, "run", fake_run)
+
+    assert main(["serve"]) == 0
+    assert seen["open_browser"] is False  # 默认关闭
+    assert main(["serve", "--browser"]) == 0
+    assert seen["open_browser"] is True
+    assert main(["serve", "--no-browser"]) == 0
+    assert seen["open_browser"] is False
+
+    # dev 走的是 config_for_path 那条路，同一个开关也要落到 config 上
+    assert main(["dev", str(tmp_path), "--browser"]) == 0
+    assert seen["open_browser"] is True
 
 
 def test_find_config_prefers_toml_then_module(tmp_path: Path, monkeypatch) -> None:
@@ -1068,11 +1300,16 @@ def test_derived_coverage_reads_pyproject_data_file(tmp_path: Path) -> None:
 # 启动时补齐覆盖率数据：文件在就跳过，不在才跑一遍
 # ----------------------------------------------------------------------
 def test_load_config_reads_coverage_warmup(tmp_path: Path) -> None:
-    path = _write_toml(tmp_path)
-    assert load_config(path).coverage_warmup is False  # 默认关闭
+    """[coverage] warmup 配什么读什么（不依赖全局默认值是 on 还是 off）。"""
+    path = _write_toml(tmp_path, extra="")
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\n[coverage]\nwarmup = false\n",
+        encoding="utf-8",
+    )
+    assert load_config(path).coverage_warmup is False
 
     path.write_text(
-        path.read_text(encoding="utf-8") + "\n[coverage]\nwarmup = true\n",
+        path.read_text(encoding="utf-8").replace("warmup = false", "warmup = true"),
         encoding="utf-8",
     )
     assert load_config(path).coverage_warmup is True
@@ -1223,6 +1460,136 @@ def test_run_commands_keep_pytest_temp_under_data_dir(tmp_path: Path) -> None:
     assert basetemp
     expected = tmp_path.resolve() / "testlens.data" / "tmp" / "pytest-demo"
     assert basetemp[0].split("=", 1)[1] == str(expected)
+
+
+def test_stop_finds_process_by_run_id(tmp_path: Path, monkeypatch) -> None:
+    """进程句柄按 run_id 记：同包停止后立刻重跑，旧线程收尾不能误删新运行的句柄。"""
+    from testlens import Toolkit
+    from testlens.runner import Run
+
+    config = make_config(tmp_path, [make_spec("demo", "apps/demo")])
+    manager = Toolkit(config).runner
+    run = Run(run_id="20260101-000000-abcd", package="demo", title="t", paths=[])
+    run.status = "running"
+    manager._runs["demo"] = run
+
+    killed: list[object] = []
+    monkeypatch.setattr("testlens.runner.kill_tree", lambda process: killed.append(process))
+    process = object()
+    manager._processes[run.run_id] = process
+
+    assert manager.stop(run.run_id) is True
+    assert killed == [process]
+    # stop 只负责杀，句柄由执行线程的 finally 自己清；否则新旧运行会互相踩
+    assert manager._processes.get(run.run_id) is process
+
+
+def test_toolkit_construction_does_not_clean_tmp(tmp_path: Path) -> None:
+    """list / page 也会构造 Toolkit：只是列个清单不该顺手删文件。"""
+    import os
+
+    from testlens import Toolkit
+
+    config = make_config(tmp_path, [make_spec("demo", "apps/demo")])
+    tmp = config.data_dir / "tmp"
+    tmp.mkdir(parents=True)
+    stale = tmp / "pytest-1.xml"
+    stale.write_text("<testsuite/>", encoding="utf-8")
+    old = time.time() - 2 * 86_400
+    os.utime(stale, (old, old))
+
+    toolkit = Toolkit(config)
+    assert stale.exists()
+
+    # 真正要跑之前才清：只删一天前的残留
+    toolkit.runner._cleanup_tmp_once()
+    assert not stale.exists()
+
+
+def test_scan_reuses_cached_test_count(tmp_path: Path, monkeypatch) -> None:
+    """内容没变就不重新 ast.parse：面板每次刷新都要扫全部脚本。"""
+    config = make_config(tmp_path, [make_spec("demo", "apps/demo")])
+    script = tmp_path / "apps/demo/test/unit/test_a.py"
+    script.write_text("def test_one():\n    pass\n\ndef test_two():\n    pass\n", encoding="utf-8")
+    scanner = Scanner(config)
+    scanner.mark_baseline(None)
+
+    monkeypatch.setattr(
+        "testlens.scan.count_tests",
+        lambda *args, **kwargs: pytest.fail("内容没变还去解析 AST"),
+    )
+    result = scanner.scan()
+    assert [item["tests"] for item in result["scripts"]] == [2]
+
+    # 内容真的变了就必须重新数，不能吃旧缓存
+    monkeypatch.undo()
+    script.write_text("def test_only():\n    pass\n", encoding="utf-8")
+    changed = [item for item in scanner.scan()["scripts"] if item["path"].endswith("test_a.py")]
+    assert changed[0]["status"] == "changed"
+    assert changed[0]["tests"] == 1
+
+
+def test_build_static_page_accepts_precomputed_payload(tmp_path: Path, monkeypatch) -> None:
+    """传了 payload 就不再扫仓库：testlens page 靠这个只扫一遍。"""
+    from testlens.inventory import build_payload, build_static_page
+
+    config = make_config(tmp_path, [make_spec("demo", "apps/demo")])
+    scanner = Scanner(config)
+    payload = build_payload(scanner)
+
+    monkeypatch.setattr(
+        Scanner, "scan", lambda self, packages=None: pytest.fail("传了 payload 不该再扫")
+    )
+    files = build_static_page(scanner, tmp_path / "out.html", payload=payload)
+
+    assert files[0].is_file()
+
+
+def test_demo_project_config_stays_valid() -> None:
+    """examples/demo 是给人手动验收的：配置必须跟着 schema 与覆盖率推导走。"""
+    demo = Path(__file__).resolve().parents[1] / "examples" / "demo"
+    toml = demo / "testlens.toml"
+    if not toml.is_file():
+        # 本地手动验收时有人会删掉它试「无配置」路径：不替他把文件加回来，也不让测试红
+        pytest.skip("examples/demo/testlens.toml 本地不存在，跳过配置守护")
+    config = load_config(toml)
+
+    assert [pkg.name for pkg in config.packages] == ["demo"]
+    assert config.port == 9000
+    assert config.host == "127.0.0.1"
+    # source_pkg=shop + pyproject 里的 [tool.coverage.run] data_file ⇒ 自动推导出这两项
+    package = config.packages[0]
+    assert package.coverage_data_file == ".coverage.demo"
+    assert "--cov=shop" in package.coverage_args
+    # demo 默认启动就预热覆盖率（演示用；--no-warm-coverage 可跳过）
+    assert config.coverage_warmup is True
+    # 示例里的测试脚本确实存在，别在重命名后留下空项目
+    assert len(list_test_files(package, config.repo_root)) == 5
+
+
+def test_module_level_config_is_used_by_dev(tmp_path: Path) -> None:
+    """模块级 config 才能被 `dev <文件.py>` 当配置读（写进 main() 里读不到）。"""
+    (tmp_path / "test").mkdir()
+    module = tmp_path / "embed.py"
+    module.write_text(
+        "from pathlib import Path\n"
+        "from testlens import PackageSpec, build_config\n"
+        "config = build_config(\n"
+        "    packages=(PackageSpec(name='solo', label='Solo', root='.'),),\n"
+        "    repo_root=Path(__file__).parent,\n"
+        "    port=9000,\n"
+        "    open_browser=True,\n"
+        "    coverage_warmup=True,\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    config = config_for_path(str(module), None)
+
+    assert config.port == 9000
+    assert config.open_browser is True
+    assert config.coverage_warmup is True
+    assert config.source is not None and config.source.endswith("embed.py")
 
 
 def test_explicit_coverage_config_drives_data_file(tmp_path: Path) -> None:

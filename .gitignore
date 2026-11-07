@@ -12,5 +12,12 @@ dist/
 testlens.data/
 .data/
 
+# 本地开发助手的工作记录，不进版本库
+.workbuddy/
+
 # 库不锁依赖：lock 由使用方生成
 uv.lock
+
+examples/demo/
+
+.coverage

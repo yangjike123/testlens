@@ -133,15 +133,22 @@ class CoverageService:
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "coverage.json"
             command = [*shlex.split(self.config.coverage_json_cmd), "--data-file", str(data_file), "-o", str(output)]
-            completed = subprocess.run(
-                command,
-                cwd=self.config.repo_root,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=self.config.repo_root,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                # 命令写错（比如宿主没装 coverage / 路径不对）也要变成
+                # NoCoverageData：server 只兜这个异常，抛别的会让接口断连接。
+                raise NoCoverageData(
+                    f"读取覆盖率失败：{type(error).__name__}: {error}"
+                ) from error
             if not output.is_file():
                 message = (completed.stderr or completed.stdout or "").strip()
                 raise NoCoverageData(f"读取覆盖率失败：{message[-300:] or 'coverage json 没有输出'}")

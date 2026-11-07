@@ -134,15 +134,23 @@ def render_html(config: Config, payload: dict, output: Path, *, run_enabled: boo
 
 
 def build_static_page(
-    scanner: Scanner, output: Path | None = None, *, single: bool | None = None
+    scanner: Scanner,
+    output: Path | None = None,
+    *,
+    single: bool | None = None,
+    payload: dict | None = None,
 ) -> list[Path]:
     """生成可直接双击打开的只读页面，返回写出的文件列表。
 
     默认拆成 `<名字>.html` + `.css` + `.js`（HTML 只有几 KB）；
     `single=True`（或配置 `[page] single = true`）合成一个自包含 HTML。
+
+    `payload` 可传入调用方已经算好的数据（`testlens page` 要用它打印统计），
+    省掉一次完整扫描。
     """
     config = scanner.config
-    payload = build_payload(scanner)
+    if payload is None:
+        payload = build_payload(scanner)
     html_path = Path(output) if output else config.dist_dir / config.static_page_name
     html_path.parent.mkdir(parents=True, exist_ok=True)
 

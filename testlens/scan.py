@@ -8,6 +8,7 @@
 
 1. 每个测试脚本的**完整源码**存在 `<data_dir>/script-cache/cache.json`；
 2. 扫描时重新读文件，与缓存里的文本**逐字比较**（不是看 mtime，也不是比 hash）；
+   缓存里顺带记了每个脚本的 `test_` 函数数——内容没变就直接复用，不必重新 ast.parse；
 3. 不一致 → `changed`；缓存里没有 → `new`；一致 → `unchanged`；
 4. 什么时候把新内容写回缓存（"确认基线"）由调用方决定：
    - 面板每次启动一次运行前：`mark_baseline(paths)`，只确认这次要跑的脚本；
@@ -41,9 +42,25 @@ def _diff_stats(old: str, new: str) -> dict:
             continue
         if line.startswith("+"):
             added += 1
-        elif line.startswith("-"):
+        elif line.startswith("-"):  # pragma: no branch - n=0 的 diff 只有 + / - 两种内容行
             removed += 1
     return {"added": added, "removed": removed}
+
+
+def _tests_for(entry: dict | None, content: str | None, path: Path, pkg: PackageSpec) -> int:
+    """test_ 函数数。内容与基线一致时直接用缓存里的值，省一次 ast.parse。
+
+    面板每次刷新都会扫一遍全部脚本，而绝大多数文件是"没变"的；逐字比较已经
+    证明文件没动过，函数数自然也不会变。
+    """
+    if (
+        entry is not None
+        and content is not None
+        and entry.get("content") == content
+        and isinstance(entry.get("tests"), int)
+    ):
+        return entry["tests"]
+    return count_tests(path, pkg.func_prefix)
 
 
 class Scanner:
@@ -103,7 +120,6 @@ class Scanner:
                 rel = self._relative(path)
                 content = self._read_source(path)
                 entry = cached.get(rel)
-                tests = count_tests(path, pkg.func_prefix)
 
                 if content is None:
                     status, diff = "unreadable", None
@@ -121,7 +137,7 @@ class Scanner:
                         "dir": Path(rel).parent.as_posix(),
                         "group": self._group_of(rel, pkg),
                         "package": pkg.name,
-                        "tests": tests,
+                        "tests": _tests_for(entry, content, path, pkg),
                         "status": status,
                         "changed": status in ("new", "changed"),
                         "diff": diff,
@@ -184,7 +200,14 @@ class Scanner:
                 content = self._read_source(path)
                 if content is None:
                     continue
-                entries[rel] = {"content": content, "confirmed_at": _now()}
+                # 顺手把函数数记进基线：下次扫描内容没变就不用再 ast.parse
+                pkg = package_of(self.config.packages, rel)
+                prefix = pkg.func_prefix if pkg is not None else "test_"
+                entries[rel] = {
+                    "content": content,
+                    "tests": count_tests(path, prefix),
+                    "confirmed_at": _now(),
+                }
                 written += 1
 
             # 已经不在磁盘上的脚本从缓存里清掉，否则每次扫描都会报"已删除"

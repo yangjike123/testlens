@@ -6,16 +6,16 @@
 
 用法：
 
-    uv run python -m testlens serve               # 默认 8787，自动开浏览器
+    uv run python -m testlens serve               # 默认 8787；不自动开页面
+    uv run python -m testlens serve --browser     # 起服务后直接打开页面
     uv run python -m testlens serve --port 9000
-    uv run python -m testlens serve --no-browser
     uv run python -m testlens dev apps/web-service     # 给目录：先读目录里的配置
 
 作为插件嵌入时不用命令行：`toolkit.serve()`。
 
 安全边界（这是本机开发工具，不是对外服务）：
 
-- 只绑回环地址（host 可配，但校验只允许 127.0.0.1 / localhost / ::1）；
+- 只绑回环地址（host 可配，但校验只允许 localhost / ::1 / 127.0.0.0/8）；
 - 只接受各包测试目录内 `test_*.py` 的相对路径，跨包/越界一律 400；
 - 按包分槽：同一包内只允许一次运行，两个 pytest 会抢同一批 fixture；
 - 校验请求来源（Origin），命令用列表传参、不经 shell。
@@ -25,10 +25,8 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
-import shlex
 import socket
 import subprocess
 import threading
@@ -306,7 +304,7 @@ def print_banner(toolkit: Toolkit) -> None:
     config = toolkit.config
     label = source_label(config)
     print()
-    print(f"配置：{label or '无配置文件（包定义写在代码里）'}（{len(config.packages)} 个包）")
+    print(f"配置：{label or '无配置文件（包定义来自代码或目录推断）'}（{len(config.packages)} 个包）")
     print(f"仓库：{config.repo_root}")
     result = toolkit.scan()
     names = ", ".join(pkg.name for pkg in config.packages)
@@ -326,23 +324,25 @@ def warm_coverage(toolkit: Toolkit) -> list[str]:
     """
     config = toolkit.config
     warmed: list[str] = []
-    for pkg in config.packages:
-        if not pkg.coverage_data_file or not pkg.coverage_args:
-            continue
+    # 没有 source_pkg / coverage_args 的包没法预热：连该统计哪个模块都不知道。
+    # 这里要出声，否则 --warm-coverage 看起来像"启动没反应"。
+    configured = [pkg for pkg in config.packages if pkg.coverage_data_file and pkg.coverage_args]
+    if not configured:
+        print(
+            "\n  没有包配置覆盖率（[[package]] 缺 source_pkg），跳过预热。"
+            "覆盖率需要知道统计哪个模块，光靠目录推断不够。"
+        )
+        return warmed
+
+    for pkg in configured:
         data_file = (config.repo_root / pkg.coverage_data_file).resolve()
         if data_file.is_file():
             continue
 
         tests_path = f"{root_prefix(pkg)}{pkg.tests_dir}"
-        basetemp = config.data_dir / "tmp" / f"pytest-{pkg.name}"
-        basetemp.parent.mkdir(parents=True, exist_ok=True)
-        command = [
-            *shlex.split(config.pytest_cmd),
-            tests_path,
-            "-q",
-            f"--basetemp={basetemp}",
-            *pkg.coverage_args,
-        ]
+        # 和面板里的运行走同一个构造器：pytest_cmd / -q / basetemp / --cov 参数
+        # 一旦两边分叉，预热生成的数据文件就可能不是页签要读的那一个。
+        command = toolkit.runner.command_for(pkg, [tests_path], coverage=True)
         # COVERAGE_FILE 高于 .coveragerc 的 data_file：不管配置在不在、cwd 是哪儿，
         # 都写到「这个包该读的那个文件」里，否则生成完页签还是空的。
         env = {**os.environ, "COVERAGE_FILE": str(data_file)}
@@ -402,6 +402,12 @@ def run(toolkit: Toolkit) -> int:
         opener = threading.Timer(0.4, lambda: webbrowser.open(url))
         opener.daemon = True
         opener.start()
+    else:
+        # 关掉自动打开后，至少要把「怎么打开」写在 URL 下面，否则第一次用会以为面板没起来
+        print(
+            "  自动打开页面已关闭：[server] open_browser = true 或加 --browser（只想这次打开）",
+            flush=True,
+        )
 
     try:
         httpd.serve_forever()

@@ -17,19 +17,26 @@ from __future__ import annotations
 
 import ast
 import configparser
+import ipaddress
 import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 PACKAGE_NAME_RE = re.compile(r"^[a-z0-9-]+$")
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# host 只允许本机回环：localhost、::1，以及 127.0.0.0/8 里的任意地址（127.1.1.1 也算）。
+LOOPBACK_HOSTNAMES = {"localhost"}
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
+# 启动面板后是否自动打开浏览器/页面。默认关闭：serve/dev 常年在 IDE 终端里反复
+# 重启，每次都弹一个标签页纯属打扰；想看页面用 --browser 或 [server] open_browser = true。
+DEFAULT_OPEN_BROWSER = False
 DEFAULT_RUN_TIMEOUT = 900.0
 DEFAULT_MAX_OUTPUT_LINES = 20_000
 DEFAULT_TAIL_LINES = 800
+# 运行历史（<data_dir>/run-history/）最多保留多少条：每次运行一条记录 + 一份完整日志，
+# 超出后从最旧的开始删，对应的 <run_id>.log 一起删。只按条数算，不看文件大小。
 DEFAULT_HISTORY_MAX_ENTRIES = 50
 DEFAULT_PYTEST_CMD = "uv run pytest"
 DEFAULT_COVERAGE_JSON_CMD = "uv run coverage json"
@@ -73,17 +80,21 @@ class Config:
     static_page_name: str
     host: str
     port: int
+    # 启动面板后是否自动打开页面（webbrowser）。默认关闭，想看就 [server] open_browser = true
+    # 或命令行 --browser；两者都只是给「要不要弹标签页」这一件事一个开关。
     open_browser: bool
     run_timeout: float
     max_output_lines: int
     tail_lines: int
+    # 运行历史保留条数（[history] max_entries）。一次运行 = 一条记录 + 一份完整日志，
+    # 新记录写入时按条数截断，最旧的记录和它的 .log 一起删掉。
     history_max_entries: int
     pytest_cmd: str
     coverage_json_cmd: str
     static_page_single: bool
     # 启动面板时，若某个包的覆盖率数据文件不存在，先跑一遍带 --cov 的测试把它生成出来。
-    # 默认关闭：跑整套测试可能很慢，由宿主在 [coverage] warmup = true 时显式打开。
-    coverage_warmup: bool = False
+    # 默认开启；跑整套测试可能很慢，不想预热就 [coverage] warmup = false 或 --no-warm-coverage。
+    coverage_warmup: bool = True
     # 配置来源（配置文件的绝对路径）。None = 没有配置文件：包定义写在代码里，
     # 或者来自 `dev <目录>` 的推断。面板和 CLI 都会显示它——否则「我明明只配了
     # 一个包，怎么出来两个」这种问题只能靠猜是读到了哪份配置。
@@ -93,7 +104,9 @@ class Config:
 # ----------------------------------------------------------------------
 # 查询辅助（全部显式接收 packages / repo_root，不读模块级状态）
 # ----------------------------------------------------------------------
-def select_packages(packages: tuple[PackageSpec, ...], name: str | None) -> tuple[PackageSpec, ...]:
+def select_packages(
+    packages: tuple[PackageSpec, ...], name: str | None
+) -> tuple[PackageSpec, ...]:
     if not name or name == "all":
         return tuple(packages)
     selected = tuple(pkg for pkg in packages if pkg.name == name)
@@ -108,6 +121,19 @@ def is_self_root(root: str) -> bool:
     return root.strip() in ("", ".", "./")
 
 
+def is_loopback_host(host: str) -> bool:
+    """host 是否本机回环：localhost、::1、以及 127.0.0.0/8 里的任意地址。
+
+    不写死三个字符串：127.1.1.1、127.0.0.2 同属回环段，绑它们不会暴露到局域网。
+    """
+    if host in LOOPBACK_HOSTNAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def root_prefix(pkg: PackageSpec) -> str:
     """仓库相对路径的包前缀；包根就是项目根时为空串，拼路径不能带 "./"。"""
     return "" if is_self_root(pkg.root) else pkg.root.rstrip("/") + "/"
@@ -115,7 +141,11 @@ def root_prefix(pkg: PackageSpec) -> str:
 
 def package_of(packages: tuple[PackageSpec, ...], path: str) -> PackageSpec | None:
     for pkg in packages:
-        if is_self_root(pkg.root) or path == pkg.root or path.startswith(pkg.root + "/"):
+        if (
+            is_self_root(pkg.root)
+            or path == pkg.root
+            or path.startswith(pkg.root + "/")
+        ):
             return pkg
     return None
 
@@ -182,7 +212,9 @@ def detect_packages(
                 continue
             if not (child / "test").is_dir():
                 continue
-            spec = PackageSpec(name=child.name, label=child.name, root=f"{parent}/{child.name}")
+            spec = PackageSpec(
+                name=child.name, label=child.name, root=f"{parent}/{child.name}"
+            )
             preset = presets.get(child.name)
             if preset:
                 spec = replace(spec, **preset)
@@ -252,7 +284,8 @@ def _survey(repo_root: Path, levels: int = 6) -> _ProjectFiles:
         coveragercs=coveragercs,
         makefile=makefile,
         pyproject=next(
-            (path for path in pyprojects if _pyproject_data_file(path) is not None), None
+            (path for path in pyprojects if _pyproject_data_file(path) is not None),
+            None,
         ),
     )
 
@@ -297,7 +330,9 @@ def _rc_data_file(rc: Path) -> str | None:
     return None
 
 
-def _makefile_coverage(makefile: Path | None, source_pkg: str) -> tuple[str, str | None] | None:
+def _makefile_coverage(
+    makefile: Path | None, source_pkg: str
+) -> tuple[str, str | None] | None:
     """找哪条 make 目标用 `--cov=<source_pkg>` 跑测试。
 
     返回 (目标名, --cov-config 的值)。有了目标名就能生成 `make test-web` 这种
@@ -332,7 +367,9 @@ def _match_recipe(
     if target is None or not recipe:
         return None
     body = "\n".join(recipe)
-    if not any(match.group("target") == source_pkg for match in _COV_ARG_RE.finditer(body)):
+    if not any(
+        match.group("target") == source_pkg for match in _COV_ARG_RE.finditer(body)
+    ):
         return None
     configured = _COV_CONFIG_RE.search(body)
     path = configured.group("path") if configured else None
@@ -372,7 +409,11 @@ def _coverage_data_path(
             path = Path(name)
             return path if path.is_absolute() else files.pyproject.parent / path
 
-    base = rc.parent if rc is not None else (files.makefile.parent if files.makefile else root)
+    base = (
+        rc.parent
+        if rc is not None
+        else (files.makefile.parent if files.makefile else root)
+    )
     return base / f".coverage.{_package_suffix(package)}"
 
 
@@ -472,7 +513,9 @@ def derive_coverage(
     elif config_file is None and hinted_config and files.makefile is not None:
         # 配置文件不在了，但 Makefile 还指着它：把这个名字报出去，覆盖率页签的
         # 「配置不存在」才有指向，而不是含糊地说「还没有数据」。
-        config_file = _display_path((files.makefile.parent / hinted_config).resolve(), root)
+        config_file = _display_path(
+            (files.makefile.parent / hinted_config).resolve(), root
+        )
 
     data_file = spec.coverage_data_file
     if data_file is None:
@@ -572,15 +615,22 @@ def build_config(
     }
 
     def pick(key: str, default):
+        # 优先级：显式参数 > 环境变量 > 文件 > 默认值
         if explicit[key] is not None:
             return explicit[key]
+        if key in env_values:
+            return env_values[key]
         if file_values.get(key) is not None:
             return file_values[key]
         return default
 
     # repo_root 不进 explicit 字典：它决定其它路径的默认值，必须先算出来
     chosen_root = repo_root if repo_root is not None else file_values.get("repo_root")
-    root = Path(chosen_root if chosen_root is not None else Path.cwd()).expanduser().resolve()
+    root = (
+        Path(chosen_root if chosen_root is not None else Path.cwd())
+        .expanduser()
+        .resolve()
+    )
 
     def resolve_path(value) -> Path:
         """相对路径按 repo_root 解析：配置里写 "testlens.data" 不跟 shell 的 cwd 跑。"""
@@ -599,7 +649,7 @@ def build_config(
         "static_page_name": "testlens.html",
         "host": DEFAULT_HOST,
         "port": DEFAULT_PORT,
-        "open_browser": True,
+        "open_browser": DEFAULT_OPEN_BROWSER,
         "run_timeout": DEFAULT_RUN_TIMEOUT,
         "max_output_lines": DEFAULT_MAX_OUTPUT_LINES,
         "tail_lines": DEFAULT_TAIL_LINES,
@@ -607,17 +657,15 @@ def build_config(
         "pytest_cmd": DEFAULT_PYTEST_CMD,
         "coverage_json_cmd": DEFAULT_COVERAGE_JSON_CMD,
         "static_page_single": False,
-        "coverage_warmup": False,
+        "coverage_warmup": True,
     }
     for key, default in defaults.items():
-        value = pick(key, default)
-        if key in env_values:
-            value = env_values[key]
-        merged[key] = value
+        merged[key] = pick(key, default)
 
     # 覆盖率四件套：宿主只写 source_pkg 时，按项目里的 Makefile / .coveragerc 补齐
     packages = tuple(
-        derive_coverage(spec, root, pytest_cmd=str(merged["pytest_cmd"])) for spec in packages
+        derive_coverage(spec, root, pytest_cmd=str(merged["pytest_cmd"]))
+        for spec in packages
     )
 
     config = Config(
@@ -648,8 +696,10 @@ def _validate(config: Config) -> None:
 
     if not config.packages:
         problems.append("packages 不能为空")
-    if config.host not in LOOPBACK_HOSTS:
-        problems.append(f"host 只允许回环地址 {sorted(LOOPBACK_HOSTS)}，收到 {config.host!r}")
+    if not is_loopback_host(config.host):
+        problems.append(
+            f"host 只允许回环地址（localhost、::1、127.0.0.0/8），收到 {config.host!r}"
+        )
     if not 1 <= config.port <= 65535:
         problems.append(f"port 超出范围：{config.port}")
     if config.run_timeout <= 0:
@@ -680,7 +730,11 @@ def _validate(config: Config) -> None:
             roots.append(".")
             names.append(spec.name)
             continue
-        if "\\" in spec.root or spec.root.startswith("/") or ".." in Path(spec.root).parts:
+        if (
+            "\\" in spec.root
+            or spec.root.startswith("/")
+            or ".." in Path(spec.root).parts
+        ):
             problems.append(f"root 必须是相对 repo_root 的规范路径：{spec.root!r}")
             continue
         if spec.root in roots:
@@ -718,13 +772,15 @@ def load_config(path: Path | str, **overrides) -> Config:
 
         [paths]    repo_root / data_dir / dist_dir / template_path
         [page]     dir（静态页目录）/ name（文件名）/ single（是否合成单文件）
-        [server]   host / port / open_browser / run_timeout / max_output_lines / tail_lines
-        [history]  max_entries
+        [server]   host / port / open_browser（启动后自动开页面，默认 false）
+                   / run_timeout / max_output_lines / tail_lines
+        [history]  max_entries（运行历史保留条数，默认 50；超出后删最旧的记录和日志）
         [commands] pytest_cmd / coverage_json_cmd
-        [coverage] warmup（启动时补生成缺失的覆盖率数据，默认 false）
+        [coverage] warmup（启动时补生成缺失的覆盖率数据，默认 true）
         [[package]] name / label / root / ... （数组，每项一个包，必填）
 
-    repo_root 缺省取配置文件所在目录；文件里的 package 列表可以整体被
+    repo_root 优先级：显式参数 > [paths] repo_root > 配置文件所在目录；
+    相对路径按配置文件所在目录解析。文件里的 package 列表可以整体被
     overrides["packages"] 取代。
     """
     import tomllib  # 3.11+；只有用文件配置的宿主才需要这个版本
@@ -750,7 +806,10 @@ def load_config(path: Path | str, **overrides) -> Config:
             args = item.pop("coverage_args", [])
             known = PackageSpec.__dataclass_fields__.keys()
             specs.append(
-                PackageSpec(coverage_args=tuple(args), **{k: v for k, v in item.items() if k in known})
+                PackageSpec(
+                    coverage_args=tuple(args),
+                    **{k: v for k, v in item.items() if k in known},
+                )
             )
         packages = tuple(specs)
 
@@ -774,8 +833,17 @@ def load_config(path: Path | str, **overrides) -> Config:
         "coverage_warmup": coverage_section.get("warmup"),
     }
     overrides.setdefault("apply_env", True)
-    # 相对路径默认相对配置文件所在目录：从任意 cwd 调用都指向同一个项目
-    root = overrides.pop("repo_root", None) or file_path.resolve().parent
+    # repo_root 优先级：调用方显式传的 > [paths] repo_root > 配置文件所在目录。
+    # 相对路径按配置文件所在目录解析，和其余路径字段保持一致。
+    explicit_root = overrides.pop("repo_root", None)
+    configured_root = paths.get("repo_root")
+    if explicit_root is not None:
+        root = explicit_root
+    elif configured_root:
+        candidate = Path(configured_root).expanduser()
+        root = candidate if candidate.is_absolute() else file_path.resolve().parent / candidate
+    else:
+        root = file_path.resolve().parent
     config = build_config(
         packages=packages if packages is not None else (),
         repo_root=root,

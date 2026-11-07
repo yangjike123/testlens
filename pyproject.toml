@@ -59,7 +59,34 @@ include = [
     "pyproject.toml",
     "run.py",
 ]
+# 示例项目自带 venv / 覆盖率数据 / 运行状态，不能进发行包
+exclude = [
+    "examples/demo/.venv",
+    "examples/demo/.pytest_cache",
+    "examples/demo/testlens.data",
+    "examples/demo/.coverage*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = [
+    # runpy 在同一个进程里重复执行 testlens.cli 时会提示「已 import 过」；
+    # 这两个用例就是为了覆盖 __main__ 入口，行为是预期的。
+    "ignore:.*found in sys.modules after import.*:RuntimeWarning",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
+
+# 覆盖率：只统计包本体，不把 tests / examples 算进去。
+# branch = true 让「没走到的 if/else」也算缺口；fail_under = 100 让覆盖率
+# 掉下来直接变成测试失败，而不是等人去看报告。
+[tool.coverage.run]
+source = ["testlens"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100
+skip_empty = true

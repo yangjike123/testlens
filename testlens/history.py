@@ -6,7 +6,8 @@
 
 存储位置 `<data_dir>/run-history/`：
 
-    history.json        运行记录索引，最新在前（条数上限来自 config）
+    history.json        运行记录索引，最新在前；条数上限来自 config.history_max_entries，
+                        超出后删掉最旧的记录和它的 <run_id>.log
     <run_id>.log        该次运行的完整输出
 
 为什么不塞进数据库：这是开发工具，不是业务。一个 JSON + 几个文本文件，

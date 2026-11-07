@@ -53,9 +53,13 @@ class Toolkit:
         return build_payload(self.scanner, packages)
 
     def build_static_page(
-        self, output: Path | None = None, *, single: bool | None = None
+        self,
+        output: Path | None = None,
+        *,
+        single: bool | None = None,
+        payload: dict | None = None,
     ) -> list[Path]:
-        return build_static_page(self.scanner, output, single=single)
+        return build_static_page(self.scanner, output, single=single, payload=payload)
 
     def serve(self) -> int:
         """起面板并阻塞到 Ctrl+C，返回进程退出码。

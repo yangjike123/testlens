@@ -6,7 +6,8 @@
     plan     该跑哪些（默认；加 --run 直接跑）
     page     生成可直接双击的静态页
     serve    起本地面板（读当前目录的 toml / py 配置）
-    dev      按目录起面板：优先读目录里的配置，没有才推断（像 `fastapi dev <app>`）
+    dev      按目录起面板：优先读目录里的配置，没有才推断（像 `fastapi dev <app>`）；
+             给 .py 时先用模块里的 config，没有就按它所在目录起面板
 
 配置来自宿主项目的 `testlens.toml` 或 `testlens_config.py`（也可以用 --config 指定）。插件**不带任何
 包定义**：找不到配置、或配置里没有 `[[package]]`，直接报错退出并给出样例。
@@ -15,16 +16,15 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import re
 import shlex
 import subprocess
 import sys
+import types
 from dataclasses import replace
 from pathlib import Path
 
-from . import __version__
 from . import __version__
 from .config import (
     DATA_DIR_NAME,
@@ -32,9 +32,9 @@ from .config import (
     ConfigError,
     PackageSpec,
     build_config,
-    root_prefix,
     count_tests,
     load_config,
+    package_of,
     select_packages,
     test_files,
 )
@@ -60,6 +60,10 @@ single = false             # true = 合成一个自包含的 HTML
 
 [server]
 port = 8787
+open_browser = false       # 启动后自动打开页面，默认关闭（--browser 可临时打开）
+
+[history]
+max_entries = 50           # 运行历史最多留几条：一次运行一条（记录 + 日志），超出删最旧的
 
 [commands]
 pytest_cmd = "uv run pytest"
@@ -120,29 +124,71 @@ def load_cli_config(config_path: str | None = None) -> Config:
     raise ConfigError(f"配置文件只支持 .toml 或 .py：{path}")
 
 
+# 推断包定义时不当成源码包的目录：测试目录本身、虚拟环境、构建产物
+_SKIP_PACKAGE_DIRS = {
+    "test",
+    "tests",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    ".venv",
+    "__pycache__",
+}
+
+
+def infer_source_pkg(path: Path) -> str | None:
+    """目录下**恰好一个**顶层 Python 包（带 __init__.py）时，用它当 source_pkg。
+
+    0 个或多个都不猜：monorepo 里猜错会把别的包算进覆盖率，比不统计更糟。
+    """
+    try:
+        candidates = [
+            child.name
+            for child in path.iterdir()
+            if child.is_dir()
+            and child.name not in _SKIP_PACKAGE_DIRS
+            and not child.name.startswith((".", "_"))
+            and (child / "__init__.py").is_file()
+        ]
+    except OSError:
+        return None
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def infer_spec(path: Path) -> PackageSpec:
-    """把一个目录当成一套测试：root='.'、测试在 <dir>/test，名字由目录名推出来。"""
+    """把一个目录当成一套测试：root='.'、测试在 <dir>/test，名字由目录名推出来。
+
+    覆盖率也顺手推一下：只有一个顶层包时当 source_pkg（数据文件/参数照常按
+    pyproject、.coveragerc 推导）；多个包就不猜，覆盖率页签会提示未配置。
+    """
     raw = path.name or "app"
     name = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "app"
-    return PackageSpec(name=name, label=raw, root=".")
+    return PackageSpec(name=name, label=raw, root=".", source_pkg=infer_source_pkg(path))
 
 
-def config_from_module(path: Path) -> Config:
-    """从 .py 里取 config（或 toolkit）。像 `fastapi dev app/main.py` 找 app 那样。"""
+def try_config_from_module(path: Path) -> Config | None:
+    """把 .py 当配置文件加载；模块里没有 config/toolkit 时返回 None。
+
+    导入失败仍然抛 ConfigError——那是脚本写错了，不能悄悄退回目录推断。
+    """
     module_name = f"_testlens_target_{path.stem}"
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ConfigError(f"没法当模块加载：{path}")
-
     # 让模块里的 `import app.xxx` 能找到：把它的目录和当前目录放进 sys.path
     for extra in (path.parent, Path.cwd()):
         if str(extra) not in sys.path:
             sys.path.insert(0, str(extra))
 
-    module = importlib.util.module_from_spec(spec)
+    module = types.ModuleType(module_name)
+    module.__file__ = str(path)
+    sys.modules[module_name] = module
     try:
-        spec.loader.exec_module(module)
+        # 直接编译源码、刻意不走 .pyc：配置文件改一行就该立刻生效。
+        # 走字节码缓存时，若源码 mtime（秒级）和大小恰好没变，会继续执行旧版本，
+        # 表现就是「我明明改了 port，启动还是老端口」。
+        source = path.read_text(encoding="utf-8")
+        exec(compile(source, str(path), "exec"), module.__dict__)
     except Exception as error:  # noqa: BLE001 - 用户的模块，报清楚原因即可
+        sys.modules.pop(module_name, None)
         raise ConfigError(
             f"加载 {path.name} 失败：{type(error).__name__}: {error}"
         ) from error
@@ -154,12 +200,47 @@ def config_from_module(path: Path) -> Config:
             return replace(value, source=str(path.resolve()))
         if isinstance(value, Toolkit):
             return replace(value.config, source=str(path.resolve()))
+    return None
 
+
+def config_from_module(path: Path) -> Config:
+    """严格版：模块里必须有 config（或 toolkit），给 `--config` 用。"""
+    config = try_config_from_module(path)
+    if config is not None:
+        return config
     raise ConfigError(
-        f"{path.name} 里没有找到 config（或 toolkit）。在文件里写一行就行：\n"
-        "    config = build_config(packages=(PackageSpec(...),), repo_root=Path(__file__).parent)\n"
-        "注意只放配置，不要在导入时启动服务。"
+        f"{path.name} 里没有找到 config（或 toolkit），不能当配置文件用。\n"
+        "  想把它当配置：在模块里写 config = build_config(...)，别在导入时启动服务\n"
+        f"  想运行这个脚本：到 {path.parent} 下执行 python {path.name}\n"
+        f"  想给它所在目录起面板：testlens dev \"{path.parent}\""
     )
+
+
+def config_from_dir(path: Path) -> Config:
+    """目录入口：优先读目录里的 testlens.toml / testlens_config.py，没有才推断。"""
+    config_file = next(
+        (path / name for name in CONFIG_CANDIDATES if (path / name).is_file()), None
+    )
+    if config_file is not None:
+        # 目录自带配置就用它：覆盖率参数只有宿主自己知道
+        return load_cli_config(str(config_file))
+    # 静态页的默认位置（testlens.data/page）由 build_config 给，这里不用再管
+    return build_config(packages=(infer_spec(path),), repo_root=path)
+
+
+def nearest_config_dir(start: Path, levels: int = 6) -> Path | None:
+    """从 start 往上找最近的带配置目录（到 .git 或 6 层为止）。
+
+    给 `dev test/test_cart.py` 这种指到子目录里文件的场景用：配置通常在上层项目根。
+    """
+    current = Path(start).resolve()
+    for _ in range(levels):
+        if any((current / name).is_file() for name in CONFIG_CANDIDATES):
+            return current
+        if (current / ".git").exists() or current.parent == current:
+            return None
+        current = current.parent
+    return None
 
 
 def config_for_path(
@@ -171,7 +252,11 @@ def config_for_path(
 ) -> Config:
     """`dev TARGET` 的配置。TARGET 可以是目录，也可以是 .py。
 
-    - `.py`：从模块里取 `config`（或 `toolkit`），适合需要覆盖率等完整配置的场景
+    - `.py` 里有 `config`（或 `toolkit`）：当成配置文件用它
+    - `.py` 里没有：当成「项目入口脚本」，从它所在目录**往上找**最近的配置目录
+      （到 .git 或 6 层为止），找不到才按该目录推断。这样
+      `testlens dev examples/demo/plugin_embed.py` 与 `testlens dev examples/demo` 等价，
+      跟 `fastapi dev app/main.py` 的直觉一致
     - 目录：优先用它自己的 `testlens.toml`，其次 `testlens_config.py`，
       都没有才按目录推断（一个包、root='.'、测试在 test/）
     """
@@ -182,17 +267,16 @@ def config_for_path(
         if path.is_file():
             if path.suffix != ".py":
                 raise ConfigError(f"只接受目录或 .py 文件：{path}")
-            base = config_from_module(path)
-        elif path.is_dir():
-            config_file = next(
-                (path / name for name in CONFIG_CANDIDATES if (path / name).is_file()), None
-            )
-            if config_file is not None:
-                # 目录自带配置就用它：覆盖率参数只有宿主自己知道
-                base = load_cli_config(str(config_file))
+            module_config = try_config_from_module(path)
+            if module_config is not None:
+                base = module_config
             else:
-                # 静态页的默认位置（testlens.data/page）由 build_config 给，这里不用再管
-                base = build_config(packages=(infer_spec(path),), repo_root=path)
+                # 当成「项目入口脚本」：配置通常在它上层，找不到才按该目录推断
+                target_dir = nearest_config_dir(path.parent) or path.parent
+                print(f"  {path.name} 不是配置文件，按 {target_dir} 起面板")
+                base = config_from_dir(target_dir)
+        elif path.is_dir():
+            base = config_from_dir(path)
         else:
             raise ConfigError(f"路径不存在：{path}")
 
@@ -348,10 +432,9 @@ def _report(toolkit: Toolkit, files: list[Path], *, run: bool, title: str) -> in
     total = 0
     for path in ordered:
         rel = path.relative_to(config.repo_root).as_posix()
-        for pkg in config.packages:
-            if rel.startswith(root_prefix(pkg)):
-                total += count_tests(path, pkg.func_prefix)
-                break
+        pkg = package_of(config.packages, rel)
+        if pkg is not None:
+            total += count_tests(path, pkg.func_prefix)
     print(f"\n{title}：{len(ordered)} 个脚本 / {total} 个测试函数\n")
     for path in ordered:
         print(f"  {path.relative_to(config.repo_root).as_posix()}")
@@ -368,10 +451,9 @@ def _run(config: Config, files: list[Path]) -> int:
     grouped: dict[str, list[str]] = {}
     for path in files:
         rel = path.relative_to(config.repo_root).as_posix()
-        for pkg in config.packages:
-            if rel.startswith(root_prefix(pkg)):
-                grouped.setdefault(pkg.name, []).append(rel)
-                break
+        pkg = package_of(config.packages, rel)
+        if pkg is not None:
+            grouped.setdefault(pkg.name, []).append(rel)
 
     order = {pkg.name: index for index, pkg in enumerate(config.packages)}
     failed = False
@@ -392,10 +474,12 @@ def _run(config: Config, files: list[Path]) -> int:
 # ----------------------------------------------------------------------
 def cmd_page(toolkit: Toolkit, output: str | None, single: bool | None = None) -> int:
     target = Path(output) if output else None
-    files = toolkit.build_static_page(target, single=single)
+    # 只扫一遍：页面内容与下面两行统计共用同一份 payload。
+    # （首次打开时 build_payload 会写一次基线，多调一次就是多扫一遍 + 多写一次。）
+    payload = toolkit.build_payload()
+    files = toolkit.build_static_page(target, single=single, payload=payload)
     for path in files:
         print(f"已生成 {path}  {path.stat().st_size / 1024:.0f} KB")
-    payload = toolkit.build_payload()
     print(f"  {payload['total']} 个脚本，{payload['changed']} 个已更新")
     source = toolkit.config.source
     print(f"  想在页面上直接运行：testlens serve --config \"{source}\"" if source else "  想在页面上直接运行：testlens serve")
@@ -438,6 +522,19 @@ def build_parser() -> argparse.ArgumentParser:
             help="启动前先生成缺失的覆盖率数据文件（覆盖配置里的 [coverage] warmup）",
         )
 
+    def add_browser_arg(target: argparse.ArgumentParser) -> None:
+        """是否自动打开页面：配置项 [server] open_browser，默认关闭。
+
+        用 BooleanOptionalAction 一次给出 --browser / --no-browser：默认值 None
+        表示「听配置的」，两个开关只覆盖这一次运行，不写回配置。
+        """
+        target.add_argument(
+            "--browser",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="启动后自动打开页面（默认关闭；等价于配置 [server] open_browser）",
+        )
+
     def add_package_arg(target: argparse.ArgumentParser) -> None:
         target.add_argument(
             "--package",
@@ -473,12 +570,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_config_arg(p_serve)
     p_serve.add_argument("--port", type=int, default=None)
-    p_serve.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    add_browser_arg(p_serve)
     add_warm_coverage_arg(p_serve)
 
     p_dev = sub.add_parser(
         "dev",
-        help="起面板：给目录先读目录里的配置、没有才推断；给 .py 则读里面的 config",
+        help="起面板：给目录先读目录里的配置、没有才推断；给 .py 则读里面的 config，没有就按它所在目录",
     )
     add_config_arg(p_dev)
     p_dev.add_argument(
@@ -487,11 +584,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help=(
             "目录（先用目录里的 testlens.toml / testlens_config.py，都没有才推断）"
-            "或 .py 文件（读模块里的 config）"
+            "或 .py 文件（模块里有 config 就用它；没有就按它所在目录起面板）"
         ),
     )
     p_dev.add_argument("--port", type=int, default=None)
-    p_dev.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    add_browser_arg(p_dev)
     add_warm_coverage_arg(p_dev)
 
     return parser
@@ -511,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.path,
                 args.config,
                 port=args.port,
-                open_browser=False if args.no_browser else None,
+                open_browser=args.browser,
             )
         else:
             config = load_cli_config(args.config)
@@ -524,8 +621,9 @@ def main(argv: list[str] | None = None) -> int:
             overrides = {}
             if args.port is not None:
                 overrides["port"] = args.port
-            if args.no_browser:
-                overrides["open_browser"] = False
+            # None = 没写这两个开关，沿用配置里的 open_browser（默认 False）
+            if args.browser is not None:
+                overrides["open_browser"] = args.browser
             if overrides:
                 config = replace(config, **overrides)
         if args.warm_coverage is not None:
