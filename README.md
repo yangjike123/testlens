@@ -199,7 +199,7 @@ coverage_hint = "make test-api"
 ## 开发
 
 ```bash
-git clone https://github.com/yanjike/testlens
+git clone https://github.com/yangjike123/testlens
 cd testlens
 python -m pip install -e . pytest
 python -m pytest -q

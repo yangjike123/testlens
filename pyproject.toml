@@ -30,10 +30,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yanjike/testlens"
-Repository = "https://github.com/yanjike/testlens"
-Issues = "https://github.com/yanjike/testlens/issues"
-Changelog = "https://github.com/yanjike/testlens/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/yangjike123/testlens"
+Repository = "https://github.com/yangjike123/testlens"
+Issues = "https://github.com/yangjike123/testlens/issues"
+Changelog = "https://github.com/yangjike123/testlens/blob/main/CHANGELOG.md"
 
 [project.scripts]
 testlens = "testlens.cli:main"
