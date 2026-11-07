@@ -34,6 +34,7 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 from .config import Config, root_prefix, source_label
@@ -55,16 +56,29 @@ def refresh_static_page(toolkit: Toolkit) -> None:
         print(f"  静态页刷新失败（不影响面板）：{type(error).__name__}: {error}", flush=True)
 
 
+def display_host(host: str) -> str:
+    """URL 里的主机写法：IPv6 字面量必须带方括号（http://[::1]:8787/）。"""
+    return f"[{host}]" if ":" in host else host
+
+
 def port_in_use(host: str, port: int) -> bool:
     """端口是否已有人监听。
 
     不能只依赖 bind 报错：HTTPServer 默认 allow_reuse_address=1，Windows 上
     这会让**两个进程同时绑同一个端口**（实测 8787 出现两条 LISTENING），
     请求随机落到旧进程上，表现是"改了代码页面却没变"。所以先 connect 探一下。
+
+    `host` 可能是 IPv6 字面量（`::1`）：socket 必须用 AF_INET6，拿 AF_INET 去
+    connect 会抛 `gaierror`，在启动前就变成未捕获异常。
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.settimeout(0.3)
-        return probe.connect_ex((host, port)) == 0
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.3)
+            return probe.connect_ex((host, port)) == 0
+    except OSError:
+        # 本机没启用 IPv6：当成"没被占用"，让后面的 bind 给出明确错误
+        return False
 
 
 class ToolkitServer(ThreadingHTTPServer):
@@ -74,6 +88,10 @@ class ToolkitServer(ThreadingHTTPServer):
 
     def __init__(self, toolkit: Toolkit) -> None:
         config = toolkit.config
+        # HTTPServer 默认 AF_INET；host 是 IPv6 字面量时要换协议族，
+        # 否则 `host = "::1"` 能通过配置校验却永远绑不上。
+        if ":" in config.host:
+            self.address_family = socket.AF_INET6
         super().__init__((config.host, config.port), Handler)
         self.toolkit = toolkit
 
@@ -133,10 +151,8 @@ class Handler(BaseHTTPRequestHandler):
             return True
         host = self.config.host
         port = self.server.server_port  # type: ignore[attr-defined] - HTTPServer 才有
-        allowed = {f"http://{host}:{port}", f"http://localhost:{port}"}
-        if ":" in host:
-            # IPv6 字面量在 URL 里必须带方括号：http://[::1]:8787
-            allowed.add(f"http://[{host}]:{port}")
+        # IPv6 字面量在 URL 里必须带方括号：http://[::1]:8787
+        allowed = {f"http://{display_host(host)}:{port}", f"http://localhost:{port}"}
         return origin in allowed
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - 覆盖基类签名
@@ -335,7 +351,10 @@ def warm_coverage(toolkit: Toolkit) -> list[str]:
         return warmed
 
     for pkg in configured:
-        data_file = (config.repo_root / pkg.coverage_data_file).resolve()
+        # configured 已经过滤过 None，但列表推导不会让类型检查器收窄；
+        # cast 只影响类型，运行期不变（也别改成 assert：-O 下会被去掉）。
+        data_file_name = cast(str, pkg.coverage_data_file)
+        data_file = (config.repo_root / data_file_name).resolve()
         if data_file.is_file():
             continue
 
@@ -378,7 +397,7 @@ def run(toolkit: Toolkit) -> int:
 
     if port_in_use(config.host, config.port):
         print(f"端口 {config.port} 已经有服务在跑（多半是上一个面板没关）")
-        print(f"  打开 http://{config.host}:{config.port}/ 看看是不是它")
+        print(f"  打开 http://{display_host(config.host)}:{config.port}/ 看看是不是它")
         print(f"  关掉它，或者在原命令后面加 --port {config.port + 1} 再跑一次")
         return 1
 
@@ -394,7 +413,7 @@ def run(toolkit: Toolkit) -> int:
         return 1
 
     refresh_static_page(toolkit)
-    url = f"http://{config.host}:{config.port}/"
+    url = f"http://{display_host(config.host)}:{config.port}/"
     print(f"\n测试面板：{url}")
     print("  页面上的按钮直接跑 pytest，Ctrl+C 退出\n", flush=True)
 

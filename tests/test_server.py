@@ -19,10 +19,13 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from testlens import PackageSpec, Toolkit, build_config
 from testlens import server as server_module
 from testlens.server import (
     ToolkitServer,
+    display_host,
     port_in_use,
     print_banner,
     refresh_static_page,
@@ -440,6 +443,94 @@ def test_port_in_use_detects_listener() -> None:
         assert port_in_use("127.0.0.1", port) is True
 
     assert port_in_use("127.0.0.1", port) is False
+
+
+def test_display_host_brackets_ipv6() -> None:
+    assert display_host("127.0.0.1") == "127.0.0.1"
+    assert display_host("localhost") == "localhost"
+    assert display_host("::1") == "[::1]"
+
+
+def test_port_in_use_treats_socket_errors_as_free(monkeypatch) -> None:
+    """本机没启用 IPv6 时 socket() 会抛 OSError：当成未被占用，让 bind 去报明确错误。"""
+
+    class BoomSocket:
+        def __init__(self, *args, **kwargs):
+            raise OSError("address family not supported")
+
+    monkeypatch.setattr(server_module.socket, "socket", BoomSocket)
+
+    assert port_in_use("::1", 8787) is False
+
+
+def test_toolkit_server_selects_ipv6_family(monkeypatch, tmp_path: Path) -> None:
+    """host 里带冒号就切 AF_INET6，不依赖本机是否真的启用 IPv6。"""
+    recorded: dict = {}
+
+    def fake_init(self, address, handler):
+        recorded["family"] = self.address_family
+
+    monkeypatch.setattr(server_module.ThreadingHTTPServer, "__init__", fake_init)
+    config = replace(project_config(tmp_path), host="::1")
+
+    ToolkitServer(Toolkit(config))
+
+    assert recorded["family"] == socket.AF_INET6
+
+
+def test_port_in_use_supports_ipv6() -> None:
+    try:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        sock.bind(("::1", 0))
+        sock.listen(1)
+    except OSError:
+        pytest.skip("本机没有启用 IPv6 回环")
+    port = sock.getsockname()[1]
+    try:
+        assert port_in_use("::1", port) is True
+    finally:
+        sock.close()
+
+    assert port_in_use("::1", port) is False
+
+
+def test_server_binds_ipv6_and_serves(tmp_path: Path) -> None:
+    try:
+        probe = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        probe.bind(("::1", 0))
+        probe.close()
+    except OSError:
+        pytest.skip("本机没有启用 IPv6 回环")
+
+    config = replace(project_config(tmp_path), host="::1", port=0)
+    httpd = ToolkitServer(Toolkit(config))
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        import http.client
+
+        connection = http.client.HTTPConnection("::1", httpd.server_port, timeout=5)
+        connection.request("GET", "/api/scripts")
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        assert response.status == 200
+        assert payload_of(body)["total"] == 1
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_run_prints_bracketed_ipv6_url(tmp_path: Path, monkeypatch, capsys) -> None:
+    config = replace(project_config(tmp_path), host="::1", port=9123)
+    toolkit = Toolkit(config)
+    monkeypatch.setattr(server_module, "ToolkitServer", DummyServer)
+    monkeypatch.setattr(server_module, "port_in_use", lambda host, port: False)
+    monkeypatch.setattr(toolkit.runner, "shutdown", lambda: None)
+
+    assert run(toolkit) == 0
+    assert "http://[::1]:9123/" in capsys.readouterr().out
 
 
 def test_refresh_static_page_swallows_errors(tmp_path: Path, monkeypatch, capsys) -> None:

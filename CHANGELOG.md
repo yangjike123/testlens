@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3 — 2026-11-08
+
+- 修复 `host = "::1"` 能通过配置校验却起不来：端口探测与 `HTTPServer` 现在按 host
+  选择 `AF_INET6`，终端 URL 打印为 `http://[::1]:8787/`（IPv6 字面量需要方括号）。
+- 修复 Pyright 报的 `Path / str | None` 类型错误：`warm_coverage` 里用 `cast` 收窄，
+  运行期行为不变。
+- CI：安装 `pytest-cov` / `ruff`，测试改为带 100% 覆盖率门禁，并跑 `ruff check`；
+  发布工作流在构建/上传前先跑测试。
+
 ## 0.4.2 — 2026-11-08
 
 - 修复：自定义 `test_glob` 的包能扫到脚本、却在运行前被硬编码的 `test_*.py` 校验拒绝；
