@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from testlens.config import (
     build_config,
     count_tests,
     load_config,
+    override_config,
+    split_command,
 )
 # 别名：名字以 test_ 开头的函数被 import 进测试模块后，pytest 会当成用例收集
 from testlens.config import test_files as list_test_files
@@ -237,6 +240,15 @@ def test_apply_env_false_ignores_environment(tmp_path: Path, monkeypatch) -> Non
     assert config.port == 8787
 
 
+def test_invalid_env_port_is_config_error(tmp_path: Path, monkeypatch) -> None:
+    # int() 抛的 ValueError 不是 ConfigError：不转换的话 CLI 会打一屏 traceback，
+    # 而不是「配置有问题：…」+ 退出码 2。
+    monkeypatch.setenv("TESTLENS_PORT", "abc")
+
+    with pytest.raises(ConfigError, match="TESTLENS_PORT 必须是整数"):
+        build_config(packages=(spec(),), repo_root=tmp_path)
+
+
 # ----------------------------------------------------------------------
 # PackageSpec 的每个字段都真的影响行为
 # ----------------------------------------------------------------------
@@ -324,6 +336,20 @@ def test_pytest_cmd_and_coverage_args_shape_command(tmp_path: Path) -> None:
     assert "test/test_a.py" in args
     assert "--cov=shop" in args
     assert any(arg.startswith("--basetemp=") for arg in args)
+
+
+def test_pytest_cmd_keeps_absolute_interpreter_path(tmp_path: Path) -> None:
+    from testlens import Toolkit
+
+    # 用户最自然的写法：直接贴解释器绝对路径、不加引号。Windows 上按 POSIX
+    # 规则拆会把反斜杠当转义符，args[0] 变成 C:...venvScriptspython.exe。
+    config = build_config(
+        packages=(spec(),), repo_root=tmp_path, pytest_cmd=f"{sys.executable} -m pytest"
+    )
+    args = Toolkit(config).runner.command_for(config.packages[0], ["test/test_a.py"])
+
+    assert args[0] == sys.executable
+    assert args[1:3] == ["-m", "pytest"]
 
 
 def test_coverage_json_cmd_is_used(tmp_path: Path, monkeypatch) -> None:
@@ -415,6 +441,63 @@ def test_invalid_values_are_rejected(
 ) -> None:
     with pytest.raises(ConfigError, match=match):
         build_config(packages=(spec(),), repo_root=tmp_path, **{field: value})
+
+
+# ----------------------------------------------------------------------
+# 命令行覆盖：replace 之后必须重新校验
+# ----------------------------------------------------------------------
+def test_override_config_revalidates_like_build_config(tmp_path: Path) -> None:
+    config = build_config(packages=(spec(),), repo_root=tmp_path)
+
+    assert override_config(config, port=9300).port == 9300
+    with pytest.raises(ConfigError, match="port 超出范围"):
+        override_config(config, port=0)
+
+
+def test_override_config_does_not_repeat_missing_dir_warning(
+    tmp_path: Path, capsys
+) -> None:
+    config = build_config(packages=(spec(root="missing"),), repo_root=tmp_path)
+    assert "目录不存在" in capsys.readouterr().out
+
+    override_config(config, port=9300)
+
+    # 只改端口，不该把 build_config 已经打过的目录告警再刷一遍
+    assert capsys.readouterr().out == ""
+
+
+# ----------------------------------------------------------------------
+# 命令拆分：Windows 的反斜杠不能被当成转义符
+# ----------------------------------------------------------------------
+def test_split_command_keeps_windows_backslashes() -> None:
+    # shlex 默认按 POSIX 规则走：C:\venv\python.exe 会被拆成 C:venvpython.exe，
+    # 子进程直接 FileNotFoundError
+    assert split_command(r"C:\venv\Scripts\python.exe -m pytest", windows=True) == [
+        r"C:\venv\Scripts\python.exe",
+        "-m",
+        "pytest",
+    ]
+
+
+def test_split_command_strips_windows_quotes() -> None:
+    argv = split_command(
+        r'"C:\Program Files\Python\python.exe" -c "print(1)"', windows=True
+    )
+
+    assert argv == [r"C:\Program Files\Python\python.exe", "-c", "print(1)"]
+
+
+def test_split_command_posix_keeps_shell_rules() -> None:
+    argv = split_command("python -m pytest --cov-report=xml:coverage.xml", windows=False)
+
+    assert argv == ["python", "-m", "pytest", "--cov-report=xml:coverage.xml"]
+    # POSIX 下反斜杠本来就是转义符，行为保持不变
+    assert split_command(r"echo a\ b", windows=False) == ["echo", "a b"]
+
+
+def test_split_command_defaults_to_current_platform() -> None:
+    # 默认分支：两种平台下这个命令的拆分结果都一样
+    assert split_command("uv run pytest") == ["uv", "run", "pytest"]
 
 
 def test_tail_lines_cannot_exceed_max_output_lines(tmp_path: Path) -> None:

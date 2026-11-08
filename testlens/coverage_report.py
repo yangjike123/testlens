@@ -10,20 +10,20 @@
 
 包没有配 coverage_data_file → 抛 NoCoverageData（面板显示「未配置覆盖率」，
 不隐藏页签）。子进程命令来自 `config.coverage_json_cmd`（默认
-`uv run coverage json`，可用 shlex 兼容带引号的模板），去 uv 化只需换配置。
+`uv run coverage json`，带引号或 Windows 反斜杠路径都能正确拆分），
+去 uv 化只需换配置。
 """
 
 from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from .config import Config, PackageSpec
+from .config import Config, PackageSpec, split_command
 
 
 class NoCoverageData(Exception):
@@ -132,7 +132,13 @@ class CoverageService:
         """调 coverage json 生成一份原始报告，读完就删临时文件。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "coverage.json"
-            command = [*shlex.split(self.config.coverage_json_cmd), "--data-file", str(data_file), "-o", str(output)]
+            command = [
+                *split_command(self.config.coverage_json_cmd),
+                "--data-file",
+                str(data_file),
+                "-o",
+                str(output),
+            ]
             try:
                 completed = subprocess.run(
                     command,

@@ -22,8 +22,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e . pytest pytest-cov
 
+      # 发版前必须全绿且覆盖率 100%：任何一项不过，后面 build / publish 都不会跑
       - name: Test
-        run: python -m pytest --cov=testlens --cov-report=term-missing
+        run: python -m pytest --cov=testlens --cov-report=term-missing --cov-fail-under=100
 
   build:
     name: Build distributions
@@ -45,9 +46,45 @@ jobs:
           name: dist
           path: dist/
 
+  verify:
+    name: Verify the built wheel
+    needs: build
+    runs-on: ubuntu-latest
+    # 刻意不 checkout：工作区里没有源码，import 到的一定是 wheel 装进去的那份
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install the wheel into a clean environment
+        run: |
+          python -m venv check
+          check/bin/python -m pip install --upgrade pip
+          check/bin/python -m pip install dist/*.whl
+
+      # 防止「忘了改 __init__.__version__ 就打 tag」：PyPI 会因同名文件直接拒绝
+      - name: Check the version matches the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          installed="$(check/bin/testlens --version | awk '{print $2}')"
+          if [ "$installed" != "$tag" ]; then
+            echo "tag is $tag but the wheel reports $installed"
+            exit 1
+          fi
+
+      - name: Smoke test the installed CLI
+        run: |
+          check/bin/testlens --version
+          check/bin/python -c "import pathlib, testlens, pytest; web = pathlib.Path(testlens.__file__).parent / 'web' / 'dashboard.html'; assert web.is_file(), f'web assets missing from wheel: {web}'; print('ok', testlens.__version__, '| pytest', pytest.__version__)"
+
   publish-pypi:
     name: Publish to PyPI
-    needs: build
+    needs: verify
     runs-on: ubuntu-latest
     # PyPI 的 Trusted Publishing：在 PyPI 项目设置里把本仓库和这个 environment 登记为发布者
     environment:

@@ -325,6 +325,20 @@ def test_build_commands_groups_by_package_in_defined_order(tmp_path: Path) -> No
     assert "loose.py" not in " ".join(commands[0][1])
 
 
+def test_build_commands_without_any_known_package_returns_empty(tmp_path: Path) -> None:
+    """一条路径都归不到包上时返回空列表，而不是拼出一条跑不了的命令。"""
+    (tmp_path / "test").mkdir()
+    config = build_config(
+        packages=(PackageSpec(name="demo", label="Demo", root="."),),
+        repo_root=tmp_path,
+        data_dir=tmp_path / "data",
+        pytest_cmd=pytest_cmd(),
+    )
+    manager = make_manager(config)
+
+    assert manager.build_commands([]) == []
+
+
 def test_validate_paths_uses_each_packages_test_glob(tmp_path: Path) -> None:
     """自定义 test_glob 的包：能扫到的脚本也必须能跑，不能只认 test_*.py。"""
     (tmp_path / "cases").mkdir()

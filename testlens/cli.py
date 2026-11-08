@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import shlex
 import subprocess
 import sys
 import types
@@ -34,8 +33,10 @@ from .config import (
     build_config,
     count_tests,
     load_config,
+    override_config,
     package_of,
     select_packages,
+    split_command,
     test_files,
 )
 from .toolkit import Toolkit
@@ -285,7 +286,8 @@ def config_for_path(
         overrides["port"] = port
     if open_browser is not None:
         overrides["open_browser"] = open_browser
-    return replace(base, **overrides) if overrides else base
+    # 走 override_config 而不是 replace：命令行端口也要过 1-65535 的校验
+    return override_config(base, **overrides) if overrides else base
 
 
 SKIP_DIRS = {
@@ -460,7 +462,7 @@ def _run(config: Config, files: list[Path]) -> int:
     sys.stdout.flush()
     for name in sorted(grouped, key=lambda name: order.get(name, len(order))):
         completed = subprocess.run(
-            [*shlex.split(config.pytest_cmd), *grouped[name], "-q"],
+            [*split_command(config.pytest_cmd), *grouped[name], "-q"],
             cwd=config.repo_root,
             check=False,
         )
@@ -594,6 +596,39 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def config_for_args(args) -> Config:
+    """子命令 -> 最终 Config：先定位配置，再套本次命令行开关。
+
+    `--port` / `--browser` / `--warm-coverage` 都只影响这一次运行，但仍然要
+    过 `_validate`：`serve --port 0` 曾被 dataclasses.replace 放过，最后打印
+    `http://127.0.0.1:0/` 这种打不开的地址。
+    """
+    if args.command == "dev":
+        config = config_for_path(
+            args.path,
+            args.config,
+            port=args.port,
+            open_browser=args.browser,
+        )
+    else:
+        config = load_cli_config(args.config)
+
+    if args.command not in ("serve", "dev"):
+        return config
+
+    overrides = {}
+    if args.command == "serve":
+        # dev 的 port / browser 已经由 config_for_path 处理过
+        if args.port is not None:
+            overrides["port"] = args.port
+        # None = 没写这两个开关，沿用配置里的 open_browser（默认 False）
+        if args.browser is not None:
+            overrides["open_browser"] = args.browser
+    if args.warm_coverage is not None:
+        overrides["coverage_warmup"] = args.warm_coverage
+    return override_config(config, **overrides) if overrides else config
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -603,31 +638,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        if args.command == "dev":
-            config = config_for_path(
-                args.path,
-                args.config,
-                port=args.port,
-                open_browser=args.browser,
-            )
-        else:
-            config = load_cli_config(args.config)
+        config = config_for_args(args)
     except ConfigError as error:
         print(f"配置有问题：\n{error}", file=sys.stderr)
         return 2
 
     if args.command in ("serve", "dev"):
-        if args.command == "serve":
-            overrides = {}
-            if args.port is not None:
-                overrides["port"] = args.port
-            # None = 没写这两个开关，沿用配置里的 open_browser（默认 False）
-            if args.browser is not None:
-                overrides["open_browser"] = args.browser
-            if overrides:
-                config = replace(config, **overrides)
-        if args.warm_coverage is not None:
-            config = replace(config, coverage_warmup=args.warm_coverage)
         toolkit = Toolkit(config)
         # dev 没找到配置文件、按目录推断又扫不到脚本：直接说清楚，别起一个
         # 「看着在跑、其实一个脚本都没有」的空面板

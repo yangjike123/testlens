@@ -4,21 +4,26 @@
 [![Python](https://img.shields.io/pypi/pyversions/testlens.svg)](https://pypi.org/project/testlens/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-一个零第三方依赖的本地测试面板：列出测试脚本、检测脚本内容变化、在浏览器里勾选运行
+一个**基于 pytest** 的本地测试面板：列出测试脚本、检测脚本内容变化、在浏览器里勾选运行
 pytest、查看运行历史与代码覆盖率，并标出哪些行没跑到。
+
+testlens 把 pytest 作为必需依赖（`pytest>=8`）：`pip install testlens` 会同时装上 pytest，
+面板启动后即可运行测试。覆盖率页签还需要 coverage，通常随 `pytest-cov` 一起安装；不装只影响
+覆盖率页签，不影响运行测试。
 
 它只做工具，不是业务模块：不建表、不写接口、不改业务代码。变更检测基于源码缓存逐字
 对比，不依赖 git。可以独立使用，也可以作为插件嵌进任何 Python 项目。
 
 ## 特性
 
-- **脚本清单与变更检测**：按包分组列出 `test_*.py`，逐字对比缓存，标出「新增 / 已修改 /
-  已删除」，不依赖 git。
+- **脚本清单与变更检测**：按包分组列出测试脚本（默认 `test_*.py`），逐字对比缓存，标出
+  「新增 / 已修改 / 已删除」，不依赖 git。
 - **浏览器里跑 pytest**：勾选脚本直接运行，实时输出；按包隔离并发，同一包内不会有两个
   pytest 抢同一批 fixture。
 - **运行历史**：每次运行的输出、耗时、用例统计落盘，重启面板后仍能翻回去看。
 - **覆盖率页签**：读 coverage 的数据文件，给出总览与逐文件未覆盖行，支持只跑失败用例。
-- **零运行时依赖**：只用标准库；`pytest` / `coverage` 是业务 dev 依赖，按需装。
+- **开箱即用**：安装 testlens 会一并安装 pytest（`>=8`），面板启动即可运行测试；
+  覆盖率页签额外需要 coverage（通常随 `pytest-cov`）。
 - **只监听回环地址**：校验 Origin、包归属与脚本路径，命令用列表传参、不经 shell。
 
 ## 安装
@@ -31,7 +36,8 @@ uv add --dev testlens
 pip install testlens
 ```
 
-要求 Python ≥ 3.11。
+要求 Python ≥ 3.11。安装 testlens 会自动安装 `pytest>=8`；覆盖率页签还需要 coverage，
+通常随 `pytest-cov` 一起装。
 
 ## 快速开始
 
@@ -101,16 +107,16 @@ source_pkg = "shared"
 
 四个字段都可以显式覆盖；显式写了就以你写的为准。
 
-覆盖率预热默认开启：启动面板时会先配对——某个包的数据文件不存在就先跑一遍带 `--cov` 的测试
-生成它，已存在就跳过。不想预热写 `[coverage] warmup = false`，或加 `--no-warm-coverage`；
-`--warm-coverage` 可强制打开。
+覆盖率预热默认开启：启动面板时会先核对一遍——某个包的数据文件不存在，就先跑一遍带 `--cov`
+的测试把它生成出来，已存在就跳过。不想预热写 `[coverage] warmup = false`，或加
+`--no-warm-coverage`；`--warm-coverage` 可强制打开。
 
 ## 命令行
 
 ```bash
 testlens list [--package NAME]          # 脚本清单与测试函数数
 testlens changed [--package NAME]       # 与缓存基线不一致的脚本
-testlens plan [--package NAME] [--run]  # 只运行有更改或新增后的测试脚本文件
+testlens plan [--package NAME] [--run]  # 只运行有更改或新增的测试脚本
 testlens page [--output PATH] [--single]  # 生成可双击的静态页
 testlens serve [--port 8787] [--browser] [--warm-coverage]
 testlens dev [TARGET] [--port 8787] [--browser] [--warm-coverage]
@@ -156,6 +162,15 @@ toolkit.serve()         # 起面板，阻塞到 Ctrl+C
 `Toolkit` 一个实例持有一份配置与全部服务（扫描、历史、覆盖率、运行器），同一进程可以
 建多个实例，互不共享状态。
 
+配置建好之后要临时改几个字段（比如命令行传进来的端口），用 `override_config`：它会
+重新跑一遍校验，行为和把这些值写在配置文件里一致；越界直接抛 `ConfigError`。
+
+```python
+from testlens import override_config
+
+config = override_config(config, port=9100)   # port=0 会抛 ConfigError
+```
+
 可运行的版本在 `examples/plugin_embed.py`（`uv run python examples/plugin_embed.py`），
 它把 `examples/demo` 当宿主项目，可以直接改成你的仓库。
 
@@ -180,7 +195,7 @@ toolkit.serve()         # 起面板，阻塞到 Ctrl+C
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `host` | `"127.0.0.1"` | 只接受回环：`localhost`、`::1`、`127.0.0.0/8`（如 `127.1.1.1`）；`0.0.0.0` 会被拒绝。用 `::1` 时访问 `http://[::1]:<port>/` |
-| `port` | `8787` | 1–65535；被占用时启动会提示换端口 |
+| `port` | `8787` | 1–65535；`--port` 走同一套校验，越界在启动前就报错；被占用时提示换端口 |
 | `open_browser` | `false` | 启动后自动打开页面；`--browser` / `--no-browser` 可临时覆盖 |
 | `run_timeout` | `900` | 单次 pytest 的超时秒数；超时杀进程并记为 failed |
 | `max_output_lines` | `20000` | 内存里保留的最大输出行数，超出丢弃最早的行 |
@@ -222,6 +237,21 @@ toolkit.serve()         # 起面板，阻塞到 Ctrl+C
 | --- | --- | --- |
 | `pytest_cmd` | `"uv run pytest"` | 面板里跑测试用的命令前缀；不用 uv 就改成 `python -m pytest` |
 | `coverage_json_cmd` | `"uv run coverage json"` | 读取覆盖率数据文件的命令，面板会在后面拼 `--data-file` / `-o` |
+
+两个命令都按「空格分段、引号分组」拆成参数列表，**不经 shell**。解释器绝对路径可以
+直接写，Windows 路径里的反斜杠不会被当成转义符：
+
+```toml
+[commands]
+pytest_cmd = "C:\\venv\\Scripts\\python.exe -m pytest"
+```
+
+路径里有空格时用引号括起来（TOML 字符串里把双引号转义）：
+
+```toml
+[commands]
+pytest_cmd = "\"C:\\Program Files\\Python\\python.exe\" -m pytest"
+```
 
 ### [[package]]
 
@@ -289,13 +319,15 @@ toolkit.serve()         # 起面板，阻塞到 Ctrl+C
 
 ### 环境变量
 
-| 变量 | 覆盖的字段 |
+| 变量 | 作用 |
 | --- | --- |
-| `TESTLENS_HOST` | `[server] host` |
-| `TESTLENS_PORT` | `[server] port` |
-| `TESTLENS_DATA_DIR` | `[paths] data_dir` |
+| `TESTLENS_HOST` | 覆盖 `[server] host` |
+| `TESTLENS_PORT` | 覆盖 `[server] port`；不是整数时启动前直接报错 |
+| `TESTLENS_DATA_DIR` | 覆盖 `[paths] data_dir` |
+| `TESTLENS_CONFIG` | 指定读哪份配置文件，等价于 `--config` |
 
-环境变量优先级低于 `build_config(...)` 的显式参数，高于配置文件。
+前三个的优先级低于 `build_config(...)` 的显式参数，高于配置文件。`TESTLENS_CONFIG`
+只决定「读哪份配置」，不参与字段覆盖；命令行 `--config` 比它更优先。
 
 运行数据默认写在 `<repo>/testlens.data/`（脚本基线、运行历史、覆盖率缓存、临时目录、
 静态页），整个目录可随时删掉重建。
@@ -309,16 +341,26 @@ toolkit.serve()         # 起面板，阻塞到 Ctrl+C
 ```bash
 git clone https://github.com/yangjike123/testlens
 cd testlens
-uv sync                     # 或：python -m pip install -e . pytest pytest-cov
+uv sync                     # 或：python -m pip install -e . pytest-cov
 uv run pytest               # 全部测试
 uv run pytest --cov=testlens --cov-report=term-missing
 ```
 
 测试覆盖面板的每条 HTTP 路由（起真实服务发请求）、真实 pytest 子进程（成功 /
-失败 / 超时 / 命令不存在）、CLI 的五个子命令与配置解析分支。`pyproject.toml` 里
+失败 / 超时 / 命令不存在）、CLI 的六个子命令（`list` / `changed` / `plan` / `page` /
+`serve` / `dev`）与配置解析分支。`pyproject.toml` 里
 `[tool.coverage.report] fail_under = 100`：覆盖率掉到 100% 以下会直接失败。
 
-插件自身没有运行时依赖；前端是三个静态文件（`testlens/web/dashboard.{html,css,js}`），
+两条流水线都卡这道门禁，任何一条不通过就不会产出或上传发行包：
+
+- **push / PR**（`.github/workflows/ci.yml`）：Python 3.11–3.14 + Windows 3.13，
+  每个组合都跑上面这遍测试（显式 `--cov-fail-under=100`）加 `ruff check`。
+- **打 tag 发版**（`.github/workflows/release.yml`）：先跑同一遍测试，再构建
+  sdist / wheel，把 wheel 装进干净虚拟环境做一次 CLI 冒烟（`testlens --version`
+  与前端资源是否打进包），最后才发 PyPI 和 GitHub Release。
+
+运行期依赖只有 `pytest>=8`（跑测试用），覆盖率页签额外需要 coverage（通常随
+`pytest-cov`）。前端是三个静态文件（`testlens/web/dashboard.{html,css,js}`），
 没有构建步骤，改完重启面板即生效。
 
 ## License

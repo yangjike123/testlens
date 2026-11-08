@@ -33,7 +33,8 @@ uv run testlens --version
 uv run python -c "import testlens; print(testlens.__file__)"   # 指向仓库里的 testlens/
 ```
 
-也可以不装、直接从仓库根用仓库的 Python 跑（等价，适合不想动 demo 的 venv）：
+也可以不装，直接用仓库根的虚拟环境跑（等价，适合不想动 demo 的 venv）。
+先在**仓库根**执行一次 `uv sync` 生成 `.venv`，然后仍然在仓库根：
 
 ```bash
 # Windows

@@ -30,8 +30,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e . pytest pytest-cov ruff
 
+      # fail_under=100 也写在 pyproject.toml 里；这里显式再写一遍，
+      # 免得有人改了配置就悄悄放行
       - name: Test
-        run: python -m pytest --cov=testlens --cov-report=term-missing
+        run: python -m pytest --cov=testlens --cov-report=term-missing --cov-fail-under=100
 
       - name: Lint
         run: ruff check testlens tests --select F,E9

@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "testlens"
 dynamic = ["version"]
-description = "本地测试面板：脚本清单、变更检测、运行历史、代码覆盖率，零运行时依赖"
+description = "基于 pytest 的本地测试面板：脚本清单、变更检测、运行历史、代码覆盖率"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "yanjike" }]
-dependencies = []
+dependencies = ["pytest>=8"]
 keywords = ["testing", "pytest", "coverage", "developer-tools", "test-dashboard"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -59,9 +59,20 @@ include = [
     "pyproject.toml",
     "run.py",
 ]
-# 示例项目自带 venv / 覆盖率数据 / 运行状态，不能进发行包
+# 本地虚拟环境与运行产物不能进发行包。.gitignore 已经兜了一层，这里再写一遍，
+# 是为了「没有 .git 的源码目录」也能构建出干净的包：hatchling 只按 .gitignore
+# 过滤，仓库根建一个 .venv311 就会被原样打进 sdist（几千个文件）。
 exclude = [
-    "examples/demo/.venv",
+    ".venv*",
+    "build",
+    "dist",
+    "*.egg-info",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".workbuddy",
+    "testlens.data",
+    ".coverage*",
+    "examples/demo/.venv*",
     "examples/demo/.pytest_cache",
     "examples/demo/testlens.data",
     "examples/demo/.coverage*",

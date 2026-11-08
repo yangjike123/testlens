@@ -12,7 +12,7 @@ dev = ["pytest>=8", "pytest-cov>=5", "testlens"]
 
 [tool.uv.sources]
 # 用工作区里这份源码（editable），改完 testlens 立刻在 demo 里生效；
-# 发版后想验证 PyPI 上的包，把这一行删掉、dev 组写 "testlens==0.4.0" 即可。
+# 发版后想验证 PyPI 上的包，把这一行删掉、dev 组写 "testlens==0.4.5" 即可。
 testlens = { path = "../..", editable = true }
 
 [tool.pytest.ini_options]

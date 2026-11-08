@@ -206,6 +206,19 @@ wheels = [
 [[package]]
 name = "testlens"
 source = { editable = "../../" }
+dependencies = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pytest", specifier = ">=8" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-cov", specifier = ">=5" },
+    { name = "ruff", specifier = ">=0.6" },
+]
 
 [[package]]
 name = "testlens-demo"

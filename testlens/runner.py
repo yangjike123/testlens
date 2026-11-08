@@ -11,7 +11,6 @@ utils 只读 .env.test），没有理由互相排队；同一个包内只允许�
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 from pathlib import Path
 import threading
@@ -20,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .config import Config, PackageSpec, package_of, root_prefix
+from .config import Config, PackageSpec, package_of, root_prefix, split_command
 from .history import HistoryStore
 from .junit import parse_files
 from .scan import Scanner
@@ -218,10 +217,15 @@ class RunManager:
                 grouped.setdefault(pkg.name, []).append(path)
 
         order = {pkg.name: index for index, pkg in enumerate(self.config.packages)}
+        by_name = {pkg.name: pkg for pkg in self.config.packages}
         commands: list[tuple[str, list[str]]] = []
         for name in sorted(grouped, key=lambda name: order.get(name, len(order))):
-            pkg = next(p for p in self.config.packages if p.name == name)
-            commands.append((name, self.command_for(pkg, grouped[name], coverage=coverage)))
+            # grouped 的键来自 package_of()，一定在 packages 里；直接查表，
+            # 别用 next(...)：生成器表达式会多出一条「耗尽」分支，覆盖率口径
+            # 随 coverage 版本变化，旧版会把它算成未覆盖。
+            commands.append(
+                (name, self.command_for(by_name[name], grouped[name], coverage=coverage))
+            )
         return commands
 
     def command_for(
@@ -233,7 +237,7 @@ class RunManager:
         预热生成的数据文件就可能不是页签要读的那一个。
         """
         args = [
-            *shlex.split(self.config.pytest_cmd),
+            *split_command(self.config.pytest_cmd),
             *sorted(paths),
             "-q",
             # pytest 默认在系统临时目录里建会话目录，并会顺手清理旧的 garbage-*；

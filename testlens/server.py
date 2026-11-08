@@ -16,11 +16,11 @@
 安全边界（这是本机开发工具，不是对外服务）：
 
 - 只绑回环地址（host 可配，但校验只允许 localhost / ::1 / 127.0.0.0/8）；
-- 只接受各包测试目录内 `test_*.py` 的相对路径，跨包/越界一律 400；
+- 只接受各包测试目录内、匹配该包 `test_glob` 的相对路径，跨包/越界一律 400；
 - 按包分槽：同一包内只允许一次运行，两个 pytest 会抢同一批 fixture；
 - 校验请求来源（Origin），命令用列表传参、不经 shell。
 
-零第三方依赖，只用标准库。
+HTTP 层只用标准库；pytest 是 testlens 的必需依赖（随包安装），运行时通过子进程调用。
 """
 
 from __future__ import annotations
@@ -117,6 +117,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # 只在要关连接时才声明：keep-alive 下多写一个 Connection 头会让
+        # 客户端等不到后续响应
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -125,6 +129,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(body, "application/json; charset=utf-8", status)
 
     def _error(self, message: str, status: HTTPStatus) -> None:
+        """回错误并**关掉这条连接**。
+
+        被拒绝的请求通常没有把 body 读完（origin 不符、Content-Length 超限、
+        路径不认识）。HTTP/1.1 默认 keep-alive，不关连接就会把残留的 body
+        当成下一个请求解析，响应串台；Windows 上还表现为客户端
+        `ConnectionAbortedError`（CI 里会变成随机失败的用例）。
+        """
+        self.close_connection = True
         self._json({"detail": message}, status)
 
     def _body(self) -> dict:

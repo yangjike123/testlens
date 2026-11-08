@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.5 — 2026-11-08
+
+- **pytest 改为必需依赖**：testlens 的运行器、junit 结果解析、`-q` / `--basetemp` / `--cov`
+  参数都建立在 pytest 上，所以 `pip install testlens` 会一并安装 `pytest>=8`，不再宣称零依赖。
+  新项目装完 testlens 就能直接运行测试，不会出现「面板能开、点运行必然失败」。
+- 覆盖率页签仍需要 coverage（通常随 `pytest-cov`）；不装只影响覆盖率页签，不影响运行测试。
+- 修复 `TESTLENS_PORT` 填非整数时直接抛出一屏 `ValueError` 堆栈：现在转成 `ConfigError`，
+  命令行输出「配置有问题：TESTLENS_PORT 必须是整数」并以退出码 2 结束。
+- 修复命令行 `--port` 绕过 1–65535 校验：`dataclasses.replace` 不跑 `_validate`，
+  `serve --port 0` 会绑到系统分配的随机端口，却把 `http://127.0.0.1:0/` 打给用户。
+  新增 `override_config()`（已导出），CLI 的 `--port` / `--browser` / `--warm-coverage`
+  统一走它重新校验，行为和写在配置文件里一致。
+- 修复 Windows 上不写引号的解释器绝对路径被拆坏：`shlex.split` 按 POSIX 规则把反斜杠
+  当转义符，`C:\venv\Scripts\python.exe` 变成 `C:venvScriptspython.exe`，子进程直接
+  `FileNotFoundError`。新增 `split_command()`，面板运行 / `plan --run` / `coverage json`
+  三处统一使用；POSIX 行为不变。
+- 文档：清掉残留的 `packages/testlens/` 旧路径与「五个子命令」，环境变量表补
+  `TESTLENS_CONFIG`，`[commands]` 说明命令拆分规则（带空格 / 反斜杠路径怎么写）。
+- CI：`ci.yml` 与 `release.yml` 的测试步骤显式加 `--cov-fail-under=100`；发版流程在
+  构建后新增「把 wheel 装进干净环境跑 CLI 冒烟」这一步，通过后才发 PyPI 与 GitHub Release。
+- 修复 Windows 上 4xx 响应偶发 `ConnectionAbortedError`：面板在 origin 不符、
+  `Content-Length` 超限、路径未知时没读完请求体就继续 keep-alive，残留 body 会被
+  当成下一个请求解析（响应串台），Windows 上则表现为连接被重置。现在错误响应一律
+  带 `Connection: close` 并关闭连接。
+- `RunManager.build_commands` 改用字典查包，不再用 `next(p for p in ...)`：生成器表达式
+  会多出一条「耗尽」分支，coverage 7.2 会把它算成未覆盖（7.17 不算），同一份代码在
+  不同 coverage 版本下会得出 99.96% 与 100% 两种结论。
+- 打包：sdist 的 `exclude` 补上 `.venv*` / `build` / `dist` / `*.egg-info` 等；之前
+  仓库根放一个 `.venv311` 就会被原样打进源码包。
+
 ## 0.4.4 — 2026-11-08
 
 - 仓库完整性：`examples/demo` 纳入版本库（保留 `uv.lock`，继续忽略 `.venv` / 运行数据 /

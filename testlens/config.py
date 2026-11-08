@@ -1,6 +1,6 @@
 """配置模型与校验：插件接入的唯一定义点。
 
-设计见 packages/testlens/README.md 的「作为插件接入」。要点：
+设计见 README.md 的「嵌入到代码里」。要点：
 
 - **插件本身不带任何包定义**：包列表（PackageSpec）必须由宿主给出，缺了就报错；
 - **其余字段都有与项目无关的默认值**：数据与生成物都放 `<repo>/testlens.data/`
@@ -9,8 +9,8 @@
   > TOML 文件（经 load_config 读入）> 默认值；
 - 校验在 build_config 里一次做完（fail fast），构造出的 Config 不可变。
 
-环境与依赖：仅标准库；TOML 解析用 3.11+ 自带的 tomllib（见 README 依赖表），
-所以本模块对 Python 版本的要求实际由「是否使用 TOML 配置」决定。
+依赖：本模块只用标准库，TOML 解析用 3.11+ 自带的 tomllib；运行期唯一的必需依赖是
+pytest>=8（由 pyproject 声明、随包安装），保证面板一起来就能跑测试。
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import configparser
 import ipaddress
 import os
 import re
+import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -553,11 +554,53 @@ def _env_values() -> dict:
     values: dict = {}
     if os.environ.get("TESTLENS_HOST"):
         values["host"] = os.environ["TESTLENS_HOST"]
-    if os.environ.get("TESTLENS_PORT"):
-        values["port"] = int(os.environ["TESTLENS_PORT"])
+    raw_port = os.environ.get("TESTLENS_PORT")
+    if raw_port:
+        # 不能直接 int()：ValueError 不是 ConfigError，会绕过 CLI 的
+        # 「配置有问题」提示，变成一屏 traceback。
+        try:
+            values["port"] = int(raw_port)
+        except ValueError:
+            raise ConfigError(
+                f"TESTLENS_PORT 必须是整数：{raw_port!r}"
+            ) from None
     if os.environ.get("TESTLENS_DATA_DIR"):
         values["data_dir"] = Path(os.environ["TESTLENS_DATA_DIR"])
     return values
+
+
+def split_command(text: str, *, windows: bool | None = None) -> list[str]:
+    """把配置里的命令串拆成参数列表（`pytest_cmd` / `coverage_json_cmd`）。
+
+    不能直接 `shlex.split`：它默认按 POSIX 规则处理，反斜杠是转义符。Windows 上
+    把解释器写成绝对路径（`pytest_cmd = "C:\\venv\\Scripts\\python.exe -m
+    pytest"`，最自然也最常见的写法）会被拆成 `C:venvScriptspython.exe`，
+    子进程直接 FileNotFoundError。
+
+    `windows` 只给测试用：默认按当前平台判断，显式传值才能在任何平台上把两种
+    规则各测一遍（否则 CI 在 Linux 上永远覆盖不到 Windows 分支）。
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        return _split_windows_command(text)
+    return shlex.split(text)
+
+
+def _split_windows_command(text: str) -> list[str]:
+    """Windows 语义：反斜杠是普通字符，引号只用于分组。
+
+    `shlex.split(posix=False)` 会把反斜杠原样保留，但成对的引号也留着——
+    路径带空格时用户会写成 `"C:\\Program Files\\...\\python.exe"`，
+    这里再剥一层。
+    """
+    return [_unquote(token) for token in shlex.split(text, posix=False)]
+
+
+def _unquote(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        return token[1:-1]
+    return token
 
 
 def build_config(
@@ -691,7 +734,7 @@ def build_config(
     return config
 
 
-def _validate(config: Config) -> None:
+def _validate(config: Config, *, warn: bool = True) -> None:
     problems: list[str] = []
 
     if not config.packages:
@@ -751,7 +794,7 @@ def _validate(config: Config) -> None:
         except ValueError:
             problems.append(f"root 越出 repo_root：{spec.root}")
         else:
-            if not resolved_root.is_dir():
+            if warn and not resolved_root.is_dir():
                 # 允许先建配置后建目录，但要点名，免得扫出 0 个脚本还不知道为什么
                 print(f"  警告：包 {spec.name} 的目录不存在：{resolved_root}")
 
@@ -760,6 +803,21 @@ def _validate(config: Config) -> None:
 
     if problems:
         raise ConfigError("配置非法：\n  - " + "\n  - ".join(problems))
+
+
+def override_config(config: Config, **changes) -> Config:
+    """在已有 Config 上改几个字段并**重新校验**。
+
+    `dataclasses.replace` 只换字段、不跑 `_validate`：CLI 的 `--port` 用它改端口
+    时，`--port 0` 会绑到系统分配的随机端口，却把 `http://127.0.0.1:0/` 打给
+    用户；`--port 70000` 也要等到 bind 失败才报错，还建议 `--port 70001`。
+    命令行开关一律走这里，行为与写在配置文件里一致。
+    """
+    updated = replace(config, **changes)
+    # warn=False：目录不存在的告警在 build_config 时已经打过一次，
+    # 这里只是改端口/开关，不该再刷一遍。
+    _validate(updated, warn=False)
+    return updated
 
 
 # ----------------------------------------------------------------------

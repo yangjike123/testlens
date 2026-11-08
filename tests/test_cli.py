@@ -1,4 +1,4 @@
-"""CLI 层测试：配置定位、目录推断、五个子命令与 main 的分发。
+"""CLI 层测试：配置定位、目录推断、六个子命令与 main 的分发。
 
 每条都走 `main(argv)` 这一层（除少数直接测辅助函数的分支），因为用户真正执行的是
 命令行；只测 cmd_* 会漏掉参数默认值、--config 的两种位置、退出码这些细节。
@@ -692,6 +692,33 @@ def test_main_serve_keeps_config_when_flags_absent(tmp_path: Path, monkeypatch) 
     assert main(["serve"]) == 0
     assert seen["config"].port == 9002
     assert seen["config"].open_browser is True
+
+
+def test_main_rejects_out_of_range_port_override(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    write_project(tmp_path)
+    write_toml(tmp_path, port=9001)
+    monkeypatch.chdir(tmp_path)
+
+    # dataclasses.replace 不跑校验时，--port 0 会绑到系统分配的随机端口，
+    # 再把 http://127.0.0.1:0/ 这种打不开的地址打给用户
+    assert main(["serve", "--port", "0"]) == 2
+    assert "port 超出范围" in capsys.readouterr().err
+
+    assert main(["dev", ".", "--port", "70000"]) == 2
+    assert "port 超出范围" in capsys.readouterr().err
+
+
+def test_main_reports_invalid_env_port(tmp_path: Path, monkeypatch, capsys) -> None:
+    write_project(tmp_path)
+    write_toml(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TESTLENS_PORT", "abc")
+
+    # 退出码 2 + 一句可读的提示，而不是 ValueError 的 traceback
+    assert main(["list"]) == 2
+    assert "TESTLENS_PORT" in capsys.readouterr().err
 
 
 def test_main_dev_serves_with_inferred_config(tmp_path: Path, monkeypatch, capsys) -> None:

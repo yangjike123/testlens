@@ -1,7 +1,7 @@
 # 本插件作为独立发行包时的忽略规则（仓库根另有一份覆盖全局的）
 __pycache__/
 *.py[cod]
-.venv/
+.venv*/
 build/
 dist/
 *.egg-info/

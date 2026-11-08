@@ -19,7 +19,7 @@
     python -m testlens <command>     CLI（读当前目录的 toml / py 配置）
     from testlens import Toolkit     插件嵌入（宿主显式给 packages 与 repo_root）
 
-详见 packages/testlens/README.md 的「作为插件接入」与「依赖与运行要求」两节。
+详见 README.md 的「嵌入到代码里」与「安装」两节。
 """
 
 from .config import (
@@ -29,11 +29,12 @@ from .config import (
     build_config,
     detect_packages,
     load_config,
+    override_config,
     source_label,
 )
 from .toolkit import Toolkit
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 __all__ = [
     "Config",
@@ -43,6 +44,7 @@ __all__ = [
     "build_config",
     "detect_packages",
     "load_config",
+    "override_config",
     "source_label",
     "__version__",
 ]
